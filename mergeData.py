@@ -1,16 +1,17 @@
 import pandas as pd
 
-# Load data
+# Load data files
 weather_data = pd.read_csv('weather-data.csv')
 price_data = pd.read_csv('price-data.csv')
 
+#remove unwanted columns
 price_data = price_data.drop(columns=['ISO3 Code', 'Datetime (UTC)'])
 
 # Convert datetime columns
 weather_data['time'] = pd.to_datetime(weather_data['time'])
 price_data['Datetime (Local)'] = pd.to_datetime(price_data['Datetime (Local)'], format='%d/%m/%Y %H:%M', dayfirst=True)
 
-# Filter by date range
+# Assign range
 start_date = '2022-09-30 00:00'
 end_date = '2024-09-30 23:00'
 
