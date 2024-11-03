@@ -5,7 +5,7 @@ weather_data = pd.read_csv('weather-data.csv')
 price_data = pd.read_csv('price-data.csv')
 consumption_data = pd.read_csv('consumption-data.csv')
 
-# Remove any unnecessary columns
+# Remove unnecessary columns
 price_data = price_data.drop(columns=['End date/time'])
 consumption_data = consumption_data.drop(columns=['End date/time'])
 
@@ -14,7 +14,7 @@ weather_data['time'] = pd.to_datetime(weather_data['time'])
 price_data['Start date/time'] = pd.to_datetime(price_data['Start date/time'], format='%b %d, %Y %I:%M %p')
 consumption_data['Start date/time'] = pd.to_datetime(consumption_data['Start date/time'], format='%b %d, %Y %I:%M %p')
 
-# Add day of the week to each dataset
+# Add day of the week 
 consumption_data['Day of the Week'] = consumption_data['Start date/time'].dt.day_name()
 
 # Set date range
@@ -26,7 +26,7 @@ weather_data = weather_data[(weather_data['time'] >= start_date) & (weather_data
 price_data = price_data[(price_data['Start date/time'] >= start_date) & (price_data['Start date/time'] <= end_date)]
 consumption_data = consumption_data[(consumption_data['Start date/time'] >= start_date) & (consumption_data['Start date/time'] <= end_date)]
 
-# Remove any duplicate timestamps if needed
+# Remove any duplicates
 price_data = price_data.drop_duplicates(subset='Start date/time')
 consumption_data = consumption_data.drop_duplicates(subset='Start date/time')
 
@@ -52,5 +52,5 @@ merged_data = pd.merge(merged_data, consumption_data, on='Start date/time', how=
 
 # Save the merged data to a CSV file
 merged_data.to_csv('merged-data.csv', index=False)
-print("Merged data with 'Day of the Week' has been saved to merged-data.csv")
+print("Merged data has been saved to merged-data.csv")
 
