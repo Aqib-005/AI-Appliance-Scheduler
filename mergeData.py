@@ -3,50 +3,54 @@ import pandas as pd
 # Load data files
 weather_data = pd.read_csv('weather-data.csv')
 price_data = pd.read_csv('price-data.csv')
+consumption_data = pd.read_csv('consumption-data.csv')
 
-#remove unwanted columns
-price_data = price_data.drop(columns=['ISO3 Code', 'Datetime (UTC)'])
+# Remove any unnecessary columns
+price_data = price_data.drop(columns=['End date/time'])
+consumption_data = consumption_data.drop(columns=['End date/time'])
 
-# Convert datetime columns
+# Convert datetime columns to datetime format
 weather_data['time'] = pd.to_datetime(weather_data['time'])
-price_data['Datetime (Local)'] = pd.to_datetime(price_data['Datetime (Local)'], format='%d/%m/%Y %H:%M', dayfirst=True)
+price_data['Start date/time'] = pd.to_datetime(price_data['Start date/time'], format='%b %d, %Y %I:%M %p')
+consumption_data['Start date/time'] = pd.to_datetime(consumption_data['Start date/time'], format='%b %d, %Y %I:%M %p')
 
-# Assign range
+# Add day of the week to each dataset
+consumption_data['Day of the Week'] = consumption_data['Start date/time'].dt.day_name()
+
+# Set date range
 start_date = '2022-09-30 00:00'
 end_date = '2024-09-30 23:00'
 
+# Filter datasets by the date range
 weather_data = weather_data[(weather_data['time'] >= start_date) & (weather_data['time'] <= end_date)]
-price_data = price_data[(price_data['Datetime (Local)'] >= start_date) & (price_data['Datetime (Local)'] <= end_date)]
+price_data = price_data[(price_data['Start date/time'] >= start_date) & (price_data['Start date/time'] <= end_date)]
+consumption_data = consumption_data[(consumption_data['Start date/time'] >= start_date) & (consumption_data['Start date/time'] <= end_date)]
 
-# Remove duplicate timestamps from price_data
-price_data = price_data.drop_duplicates(subset='Datetime (Local)')
+# Remove any duplicate timestamps if needed
+price_data = price_data.drop_duplicates(subset='Start date/time')
+consumption_data = consumption_data.drop_duplicates(subset='Start date/time')
 
-# Set index to time for both
+# Set index to time for all datasets
 weather_data.set_index('time', inplace=True)
-price_data.set_index('Datetime (Local)', inplace=True)
+price_data.set_index('Start date/time', inplace=True)
+consumption_data.set_index('Start date/time', inplace=True)
 
-# Create a complete date range and reindex
+# Create a complete date range and reindex all datasets to ensure continuity
 date_range = pd.date_range(start=start_date, end=end_date, freq='H')
 weather_data = weather_data.reindex(date_range)
 price_data = price_data.reindex(date_range)
+consumption_data = consumption_data.reindex(date_range)
 
-# Reset index and rename for merge
-weather_data = weather_data.reset_index().rename(columns={'index': 'Datetime (Local)'})
-price_data = price_data.reset_index().rename(columns={'index': 'Datetime (Local)'})
+# Reset index and rename for merging
+weather_data = weather_data.reset_index().rename(columns={'index': 'Start date/time'})
+price_data = price_data.reset_index().rename(columns={'index': 'Start date/time'})
+consumption_data = consumption_data.reset_index().rename(columns={'index': 'Start date/time'})
 
 # Merge datasets on time
-merged_data = pd.merge(weather_data, price_data, on='Datetime (Local)', how='outer')
+merged_data = pd.merge(weather_data, price_data, on='Start date/time', how='outer')
+merged_data = pd.merge(merged_data, consumption_data, on='Start date/time', how='outer')
 
-# Save the merged data
+# Save the merged data to a CSV file
 merged_data.to_csv('merged-data.csv', index=False)
-print("Merged data has been saved to merged_data.csv")
-
-
-# merged_data = pd.merge(filtered_weather, filtered_price, left_on='time', right_on='Datetime (Local)')
-# merged_data.drop(columns=['Datetime (Local)'], inplace=True)
-# merged_data.to_csv('merged_data.csv', index=False)
-
-
-
-
+print("Merged data with 'Day of the Week' has been saved to merged-data.csv")
 
