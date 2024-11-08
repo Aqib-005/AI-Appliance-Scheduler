@@ -10,14 +10,12 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 # Load dataset
 data = pd.read_csv("data/merged-data.csv") 
 
-# Check column names to verify correctness
-print("Columns in the dataset:", data.columns)
-
-# Remove commas from numeric columns and convert to float
+# Remove commas in numeric columns and convert them to float
 data['Price Germany/Luxembourg [Euro/MWh]'] = data['Price Germany/Luxembourg [Euro/MWh]'].replace({',': ''}, regex=True).astype(float)
+data['Total (grid consumption) [MWh]'] = data['Total (grid consumption) [MWh]'].replace({',': ''}, regex=True).astype(float)
 
-# Convert date column to datetime and extract useful features
-data['Start date/time'] = pd.to_datetime(data['Start date/time'])
+# Specify dayfirst=True to indicate that the date format is DD/MM/YYYY
+data['Start date/time'] = pd.to_datetime(data['Start date/time'], dayfirst=True)
 data['Year'] = data['Start date/time'].dt.year
 data['Month'] = data['Start date/time'].dt.month
 data['Day'] = data['Start date/time'].dt.day
@@ -34,9 +32,13 @@ features = [
 X = data[features]
 y = data[target]
 
-# Split data by date for training (first 80%) and testing (last 20%)
-train_data = data[data['Start date/time'] < '2024-09-30']
-test_data = data[data['Start date/time'] >= '2024-09-30']
+# impute missing target values 
+data[target] = data[target].fillna(data[target].mean())
+
+# Split data by date for training (2022-2023) and testing (2023-2024)
+train_data = data[data['Start date/time'] < '2023-09-30']
+test_data = data[data['Start date/time'] >= '2023-09-30']
+print(train_data)
 X_train = train_data[features]
 y_train = train_data[target]
 X_test = test_data[features]
