@@ -30,17 +30,23 @@ features = [
     'Total (grid consumption) [MWh]', 'Day of the Week', 'Year', 'Month', 'Day', 'Hour'
 ]
 
-# Split data and preprocess
-X_train, X_test, y_train, y_test = train_test_split(data[features], data[target], test_size=0.2, shuffle=False)
+X = data[features]
+y = data[target]
+
+# impute missing target values 
+data[target] = data[target].fillna(data[target].mean())
+
+# Split data by date for training (2022-2023) and testing (2023-2024)
+train_data = data[data['Start date/time'] < '2023-09-30']
+test_data = data[data['Start date/time'] >= '2023-09-30']
+X_train = train_data[features]
+y_train = train_data[target]
+X_test = test_data[features]
+y_test = test_data[target]
 
 # Preprocess features and scale target
 numeric_features = [...]  # numeric columns
 categorical_features = [...]  # categorical columns
-
-print(X_train.columns)
-print(numeric_features)
-print(categorical_features)
-
 
 # Verify columns
 for col in numeric_features + categorical_features:

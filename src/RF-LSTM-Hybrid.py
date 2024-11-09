@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, OneHotEncoder, MinMaxScaler
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from tensorflow.keras.models import Sequential
@@ -9,7 +9,6 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping
 import xgboost as xgb
-from sklearn.model_selection import GridSearchCV
 
 # Load and preprocess data
 data = pd.read_csv("data/merged-data.csv").dropna()
@@ -23,7 +22,7 @@ data['Month'] = data['Start date/time'].dt.month
 data['Day'] = data['Start date/time'].dt.day
 data['Hour'] = data['Start date/time'].dt.hour
 
-# Define features and target
+# Define features and target, including weather data
 target = 'Price Germany/Luxembourg [Euro/MWh]'
 features = [
     'temperature_2m (°C)', 'relative_humidity_2m (%)', 'precipitation (mm)',
@@ -31,6 +30,7 @@ features = [
     'Total (grid consumption) [MWh]', 'Day of the Week', 'Year', 'Month', 'Day', 'Hour'
 ]
 
+# Train-test split
 X_train, X_test, y_train, y_test = train_test_split(data[features], data[target], test_size=0.2, shuffle=False)
 
 # Preprocess features
@@ -52,11 +52,11 @@ y_scaler = MinMaxScaler()
 y_train_scaled = y_scaler.fit_transform(y_train.values.reshape(-1, 1))
 y_test_scaled = y_scaler.transform(y_test.values.reshape(-1, 1))
 
-# Convert the sparse matrix to a dense matrix
+# Convert sparse matrix to dense matrix
 X_train_scaled_dense = X_train_scaled.toarray() if hasattr(X_train_scaled, 'toarray') else X_train_scaled
 X_test_scaled_dense = X_test_scaled.toarray() if hasattr(X_test_scaled, 'toarray') else X_test_scaled
 
-# Now reshape for LSTM after conversion to dense
+# Reshape for LSTM
 X_train_lstm = X_train_scaled_dense.reshape((X_train_scaled_dense.shape[0], 1, X_train_scaled_dense.shape[1]))
 X_test_lstm = X_test_scaled_dense.reshape((X_test_scaled_dense.shape[0], 1, X_test_scaled_dense.shape[1]))
 
@@ -81,13 +81,17 @@ lstm_model.fit(X_train_lstm, y_train_scaled, epochs=50, batch_size=16, validatio
 intermediate_features_train = lstm_model.predict(X_train_lstm)
 intermediate_features_test = lstm_model.predict(X_test_lstm)
 
-# Combine LSTM features with original features for XGBoost
-X_train_xgb = np.concatenate([X_train_scaled, intermediate_features_train], axis=1)
-X_test_xgb = np.concatenate([X_test_scaled, intermediate_features_test], axis=1)
+# Ensure compatibility for concatenation
+if intermediate_features_train.ndim == 1:
+    intermediate_features_train = intermediate_features_train.reshape(-1, 1)
+if intermediate_features_test.ndim == 1:
+    intermediate_features_test = intermediate_features_test.reshape(-1, 1)
+
+# Concatenate original features and intermediate LSTM features
+X_train_xgb = np.concatenate([X_train_scaled_dense, intermediate_features_train], axis=1)
+X_test_xgb = np.concatenate([X_test_scaled_dense, intermediate_features_test], axis=1)
 
 # Step 2: Train XGBoost on the combined features
-
-# Hyperparameter tuning with GridSearchCV
 xgb_model = xgb.XGBRegressor(n_estimators=100, random_state=42)
 
 # Define hyperparameters for GridSearchCV
@@ -102,7 +106,7 @@ param_grid = {
 grid_search = GridSearchCV(estimator=xgb_model, param_grid=param_grid, cv=3, n_jobs=-1, verbose=1, scoring='neg_mean_squared_error')
 grid_search.fit(X_train_xgb, y_train)
 
-# Best model from grid search
+# Get best model from grid search
 best_xgb_model = grid_search.best_estimator_
 
 # Step 3: Evaluate the model
