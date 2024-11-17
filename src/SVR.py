@@ -1,7 +1,8 @@
 import pandas as pd
-from sklearn.model_selection import train_test_split
+import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVR
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -13,53 +14,79 @@ data = pd.read_csv("data/merged-data.csv")
 data['Price Germany/Luxembourg [Euro/MWh]'] = data['Price Germany/Luxembourg [Euro/MWh]'].replace({',': ''}, regex=True).astype(float)
 data['Total (grid consumption) [MWh]'] = data['Total (grid consumption) [MWh]'].replace({',': ''}, regex=True).astype(float)
 
-# Convert Start date/time to datetime and extract Year, Month, Day, Hour
+# Convert Start date/time to datetime and extract useful time features
 data['Start date/time'] = pd.to_datetime(data['Start date/time'], dayfirst=True)
 data['Year'] = data['Start date/time'].dt.year
 data['Month'] = data['Start date/time'].dt.month
 data['Day'] = data['Start date/time'].dt.day
 data['Hour'] = data['Start date/time'].dt.hour
 
-# Feature selection based on correlation analysis
+# Create lagged features for target variable
+data['Lag1_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
+
+# Drop rows with missing values after lagging
+data = data.dropna()
+
+# Feature selection based on correlation and engineering
 features = [
-    'temperature_2m (°C)', 'relative_humidity_2m (%)', 'wind_speed_100m (km/h)', 
-    'Total (grid consumption) [MWh]', 'Month', 'Hour'
+    'temperature_2m (°C)', 
+    'wind_speed_100m (km/h)', 
+    'Total (grid consumption) [MWh]', 
+    'Day', 
+    'Hour', 
+    'Lag1_Price'
 ]
 target = 'Price Germany/Luxembourg [Euro/MWh]'
 
-# Subset the data to include only the features and target
+# Subset the data
 data_subset = data[features + [target]]
 
-# Remove rows with missing values
-data_subset = data_subset.dropna()
+# Split data chronologically for train-test
+train_data = data[data['Start date/time'] < '2023-09-30']
+test_data = data[data['Start date/time'] >= '2023-09-30']
 
-# Split data into features (X) and target (y)
-X = data_subset[features]
-y = data_subset[target]
+X_train = train_data[features]
+y_train = train_data[target]
+X_test = test_data[features]
+y_test = test_data[target]
 
-# Split data
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Scale the features using StandardScaler
+# Normalize the features
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-svr = SVR(kernel='rbf', C=100, gamma='scale', epsilon=0.1)
-svr.fit(X_train_scaled, y_train)
+# Normalize the target
+y_train_mean, y_train_std = y_train.mean(), y_train.std()
+y_train_scaled = (y_train - y_train_mean) / y_train_std
 
-y_pred = svr.predict(X_test_scaled)
+# SVR Hyperparameter Tuning using GridSearchCV
+param_grid = {
+    'C': [5, 10, 20],
+    'gamma': [0.005, 0.01, 0.02],
+    'epsilon': [5, 10, 15]
+}
+svr = SVR(kernel='rbf')
+grid_search = GridSearchCV(svr, param_grid, cv=3, scoring='neg_mean_squared_error', verbose=2)
+grid_search.fit(X_train_scaled, y_train_scaled)
 
+# Best model
+best_svr = grid_search.best_estimator_
+print(f"Best parameters: {grid_search.best_params_}")
+
+# Predict on test data
+y_pred_scaled = best_svr.predict(X_test_scaled)
+y_pred = y_pred_scaled * y_train_std + y_train_mean
+
+# Evaluate the model
 mse = mean_squared_error(y_test, y_pred)
 mae = mean_absolute_error(y_test, y_pred)
 r2 = r2_score(y_test, y_pred)
 
-# Print the evaluation results
 print(f"Mean Squared Error: {mse:.4f}")
 print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
 
-# Plot the true vs predicted prices
+# Plot true vs predicted prices
 plt.figure(figsize=(10, 6))
 plt.scatter(y_test, y_pred, color='blue', label='Predicted vs Actual')
 plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], color='red', linewidth=2, label='Ideal Prediction')
@@ -67,4 +94,11 @@ plt.title('SVR: Predicted vs Actual Prices')
 plt.xlabel('True Price')
 plt.ylabel('Predicted Price')
 plt.legend()
+plt.show()
+
+# Correlation Heatmap (Optional)
+corr = data_subset.corr()
+plt.figure(figsize=(10, 8))
+sns.heatmap(corr, annot=True, cmap='coolwarm', fmt='.2f')
+plt.title('Feature Correlation Heatmap')
 plt.show()
