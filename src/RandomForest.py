@@ -1,82 +1,91 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# Load dataset
-data = pd.read_csv("data/merged-data.csv") 
+# Load the data
+data = pd.read_csv("data/merged-data.csv")
 
-# Remove commas in numeric columns and convert them to float
+# Data cleaning and preprocessing
 data['Price Germany/Luxembourg [Euro/MWh]'] = data['Price Germany/Luxembourg [Euro/MWh]'].replace({',': ''}, regex=True).astype(float)
 data['Total (grid consumption) [MWh]'] = data['Total (grid consumption) [MWh]'].replace({',': ''}, regex=True).astype(float)
 
-# Specify dayfirst=True to indicate that the date format is DD/MM/YYYY
+# Convert Start date/time to datetime and extract useful time features
 data['Start date/time'] = pd.to_datetime(data['Start date/time'], dayfirst=True)
 data['Year'] = data['Start date/time'].dt.year
 data['Month'] = data['Start date/time'].dt.month
 data['Day'] = data['Start date/time'].dt.day
 data['Hour'] = data['Start date/time'].dt.hour
 
-# Define features and target variable
-target = 'Price Germany/Luxembourg [Euro/MWh]'
+# Create lagged features for target variable
+data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
+
+# Drop rows with missing values after lagging
+data = data.dropna()
+
+# Feature selection based on correlation and engineering
 features = [
-    'temperature_2m (°C)', 'relative_humidity_2m (%)', 'precipitation (mm)',
-    'rain (mm)', 'snowfall (cm)', 'weather_code (wmo code)', 'wind_speed_100m (km/h)',
-    'Total (grid consumption) [MWh]', 'Day of the Week', 'Year', 'Month', 'Day', 'Hour'
+    'temperature_2m (°C)', 
+    'wind_speed_100m (km/h)', 
+    'Total (grid consumption) [MWh]', 
+    'Day', 
+    'Hour', 
+    'Lag_Price'
 ]
+target = 'Price Germany/Luxembourg [Euro/MWh]'
 
-X = data[features]
-y = data[target]
+# Subset the data
+data_subset = data[features + [target]]
 
-# impute missing target values 
-data[target] = data[target].fillna(data[target].mean())
-
-# Split data by date for training (2022-2023) and testing (2023-2024)
+# Split data chronologically for train-test
 train_data = data[data['Start date/time'] < '2023-09-30']
 test_data = data[data['Start date/time'] >= '2023-09-30']
+
 X_train = train_data[features]
 y_train = train_data[target]
 X_test = test_data[features]
 y_test = test_data[target]
 
-# Define numerical and categorical columns for preprocessing
-numeric_features = [
-    'temperature_2m (°C)', 'relative_humidity_2m (%)', 'precipitation (mm)',
-    'rain (mm)', 'snowfall (cm)', 'wind_speed_100m (km/h)', 'Total (grid consumption) [MWh]',
-    'weather_code (wmo code)', 'Year', 'Month', 'Day', 'Hour'
-]
-categorical_features = ['Day of the Week']
+# Normalize the features
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
 
-# Preprocessing: scaling numeric data and encoding categorical data
-preprocessor = ColumnTransformer(
-    transformers=[
-        ('num', StandardScaler(), numeric_features),
-        ('cat', OneHotEncoder(), categorical_features)
-    ]
-)
+# Normalize the target
+y_train_mean, y_train_std = y_train.mean(), y_train.std()
+y_train_scaled = (y_train - y_train_mean) / y_train_std
 
-# Pipeline with preprocessing and Random Forest regressor
-pipeline = Pipeline([
-    ('preprocessor', preprocessor),
-    ('model', RandomForestRegressor(n_estimators=100, random_state=42))
-])
+# Random Forest Hyperparameter Tuning using RandomizedSearchCV
+param_dist = {
+    'n_estimators': [100, 200, 300, 400, 500],
+    'max_depth': [10, 20, 30, 40, 50],
+    'min_samples_split': [2, 5, 10],
+    'min_samples_leaf': [1, 2, 4]
+}
 
-# Train the model
-pipeline.fit(X_train, y_train)
+rf = RandomForestRegressor()
 
-# Make predictions
-y_pred = pipeline.predict(X_test)
+# Use RandomizedSearchCV for faster hyperparameter tuning
+random_search = RandomizedSearchCV(rf, param_distributions=param_dist, n_iter=10, cv=3, n_jobs=-1, verbose=2, random_state=42)
+random_search.fit(X_train_scaled, y_train_scaled)
+
+# Best model
+best_rf = random_search.best_estimator_
+print(f"Best parameters: {random_search.best_params_}")
+
+# Predict on test data
+y_pred_scaled = best_rf.predict(X_test_scaled)
+y_pred = y_pred_scaled * y_train_std + y_train_mean
 
 # Evaluate the model
-mae = mean_absolute_error(y_test, y_pred)
 mse = mean_squared_error(y_test, y_pred)
-rmse = np.sqrt(mse)
+mae = mean_absolute_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
 
-print("Model Evaluation:")
-print("Mean Absolute Error (MAE):", mae)
-print("Mean Squared Error (MSE):", mse)
-print("Root Mean Squared Error (RMSE):", rmse)
+print(f"Mean Squared Error: {mse:.4f}")
+print(f"Mean Absolute Error: {mae:.4f}")
+print(f"R-squared: {r2:.4f}")

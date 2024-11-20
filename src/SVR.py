@@ -22,7 +22,7 @@ data['Day'] = data['Start date/time'].dt.day
 data['Hour'] = data['Start date/time'].dt.hour
 
 # Create lagged features for target variable
-data['Lag1_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
+data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
 
 # Drop rows with missing values after lagging
 data = data.dropna()
@@ -34,7 +34,7 @@ features = [
     'Total (grid consumption) [MWh]', 
     'Day', 
     'Hour', 
-    'Lag1_Price'
+    'Lag_Price'
 ]
 target = 'Price Germany/Luxembourg [Euro/MWh]'
 
@@ -85,20 +85,3 @@ r2 = r2_score(y_test, y_pred)
 print(f"Mean Squared Error: {mse:.4f}")
 print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
-
-# Plot true vs predicted prices
-plt.figure(figsize=(10, 6))
-plt.scatter(y_test, y_pred, color='blue', label='Predicted vs Actual')
-plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], color='red', linewidth=2, label='Ideal Prediction')
-plt.title('SVR: Predicted vs Actual Prices')
-plt.xlabel('True Price')
-plt.ylabel('Predicted Price')
-plt.legend()
-plt.show()
-
-# Correlation Heatmap (Optional)
-corr = data_subset.corr()
-plt.figure(figsize=(10, 8))
-sns.heatmap(corr, annot=True, cmap='coolwarm', fmt='.2f')
-plt.title('Feature Correlation Heatmap')
-plt.show()
