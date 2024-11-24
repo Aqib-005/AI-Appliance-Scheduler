@@ -87,39 +87,55 @@ print(f"Best RF Parameters: {rf_random.best_params_}")
 rf_train_pred = best_rf.predict(X_train)
 rf_test_pred = best_rf.predict(X_test)
 
-# Reshape RF predictions to be 3D (matching the LSTM input shape)
-rf_train_pred_reshaped = rf_train_pred.reshape(-1, 1, 1)  # Shape: [samples, timesteps, 1 feature]
-rf_test_pred_reshaped = rf_test_pred.reshape(-1, 1, 1)  # Shape: [samples, timesteps, 1 feature]
+# Calculate residuals for Random Forest predictions
+rf_train_residuals = y_train - rf_train_pred
+rf_test_residuals = y_test - rf_test_pred
 
-# Step 2: Concatenate RF predictions with scaled input data for LSTM
-X_train_scaled = X_train_scaled.reshape((X_train_scaled.shape[0], 1, X_train_scaled.shape[1]))
-X_test_scaled = X_test_scaled.reshape((X_test_scaled.shape[0], 1, X_test_scaled.shape[1]))
+# Reshape residuals to 3D for LSTM
+rf_train_residuals_reshaped = rf_train_residuals.values.reshape(-1, 1, 1)
+rf_test_residuals_reshaped = rf_test_residuals.values.reshape(-1, 1, 1)
 
-X_train_lstm = np.concatenate([X_train_scaled, rf_train_pred_reshaped], axis=2)
-X_test_lstm = np.concatenate([X_test_scaled, rf_test_pred_reshaped], axis=2)
+# Prepare input data for LSTM by appending residuals
+X_train_lstm = np.concatenate([X_train_scaled.reshape((-1, 1, X_train_scaled.shape[1])), rf_train_residuals_reshaped], axis=2)
+X_test_lstm = np.concatenate([X_test_scaled.reshape((-1, 1, X_test_scaled.shape[1])), rf_test_residuals_reshaped], axis=2)
 
-# Step 3: Train the LSTM model on the combined features
+# Adjust the LSTM model
 lstm_model = Sequential()
-lstm_model.add(LSTM(units=64, activation='relu', input_shape=(X_train_lstm.shape[1], X_train_lstm.shape[2])))
+lstm_model.add(LSTM(units=64, activation='relu', return_sequences=True, input_shape=(X_train_lstm.shape[1], X_train_lstm.shape[2])))
+lstm_model.add(LSTM(units=32, activation='relu'))
 lstm_model.add(Dense(units=1))
 
-# Compile the model
+# Compile with regularization (dropout can be added to LSTM layers if overfitting is observed)
 lstm_model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
 
-# Train the LSTM model
-lstm_model.fit(X_train_lstm, y_train_scaled, epochs=20, batch_size=32, verbose=2)
+# Train the LSTM model on residuals
+lstm_model.fit(X_train_lstm, rf_train_residuals, epochs=30, batch_size=32, verbose=2, validation_split=0.2)
 
-# Step 4: Make predictions and inverse transform
-y_pred_scaled = lstm_model.predict(X_test_lstm)
-y_pred = y_pred_scaled * y_train_std + y_train_mean  # Inverse scaling
+# Predict residuals with LSTM
+lstm_residual_predictions = lstm_model.predict(X_test_lstm)
+
+# Combine RF predictions with LSTM residuals for final prediction
+final_hybrid_predictions = rf_test_pred + lstm_residual_predictions.flatten()
 
 # Evaluate the hybrid model
-mse = mean_squared_error(y_test, y_pred)
-mae = mean_absolute_error(y_test, y_pred)
-r2 = r2_score(y_test, y_pred)
+mse = mean_squared_error(y_test, final_hybrid_predictions)
+mae = mean_absolute_error(y_test, final_hybrid_predictions)
+r2 = r2_score(y_test, final_hybrid_predictions)
 
+print("Hybrid Model Evaluation:")
 print(f"Mean Squared Error: {mse:.4f}")
 print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
+
+# Visualize performance
+plt.figure(figsize=(10, 6))
+plt.plot(y_test.values, label="True Values", color='blue')
+plt.plot(final_hybrid_predictions, label="Hybrid Predictions", color='orange')
+plt.legend()
+plt.title("Hybrid Model Predictions vs True Values")
+plt.xlabel("Test Samples")
+plt.ylabel("Price Germany/Luxembourg [Euro/MWh]")
+plt.show()
+
 
 
