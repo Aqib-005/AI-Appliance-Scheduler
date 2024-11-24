@@ -1,10 +1,10 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import RandomizedSearchCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.ensemble import RandomForestRegressor
 import matplotlib.pyplot as plt
-import seaborn as sns
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, LSTM
 from tensorflow.keras.optimizers import Adam
@@ -61,30 +61,46 @@ X_test_scaled = scaler.transform(X_test)
 y_train_mean, y_train_std = y_train.mean(), y_train.std()
 y_train_scaled = (y_train - y_train_mean) / y_train_std
 
-# Reshape input for LSTM (3D tensor: [samples, time steps, features])
-X_train_scaled = X_train_scaled.reshape((X_train_scaled.shape[0], 1, X_train_scaled.shape[1]))  # [samples, timesteps, features]
-X_test_scaled = X_test_scaled.reshape((X_test_scaled.shape[0], 1, X_test_scaled.shape[1]))  # [samples, timesteps, features]
+# Step 1: Hyperparameter tuning for Random Forest
+rf_param_grid = {
+    'n_estimators': [50, 100, 200],
+    'max_depth': [None, 10, 20, 30],
+    'min_samples_split': [2, 5, 10],
+    'min_samples_leaf': [1, 2, 4]
+}
 
-# Step 1: Train the Random Forest model
-rf_model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
-rf_model.fit(X_train, y_train)
+rf_random = RandomizedSearchCV(
+    estimator=RandomForestRegressor(random_state=42),
+    param_distributions=rf_param_grid,
+    n_iter=20,
+    cv=3,
+    verbose=2,
+    random_state=42,
+    n_jobs=-1
+)
 
-# Predict with Random Forest
-rf_train_pred = rf_model.predict(X_train)
-rf_test_pred = rf_model.predict(X_test)
+rf_random.fit(X_train, y_train)
+best_rf = rf_random.best_estimator_
+print(f"Best RF Parameters: {rf_random.best_params_}")
+
+# Predict with the best RF model
+rf_train_pred = best_rf.predict(X_train)
+rf_test_pred = best_rf.predict(X_test)
 
 # Reshape RF predictions to be 3D (matching the LSTM input shape)
 rf_train_pred_reshaped = rf_train_pred.reshape(-1, 1, 1)  # Shape: [samples, timesteps, 1 feature]
 rf_test_pred_reshaped = rf_test_pred.reshape(-1, 1, 1)  # Shape: [samples, timesteps, 1 feature]
 
-# Step 2: Concatenate the Random Forest predictions with the scaled input data
-# Concatenate RF predictions with the scaled features for LSTM input
-X_train_lstm = np.concatenate([X_train_scaled, rf_train_pred_reshaped], axis=2)  # Add RF prediction as new feature
-X_test_lstm = np.concatenate([X_test_scaled, rf_test_pred_reshaped], axis=2)  # Add RF prediction as new feature
+# Step 2: Concatenate RF predictions with scaled input data for LSTM
+X_train_scaled = X_train_scaled.reshape((X_train_scaled.shape[0], 1, X_train_scaled.shape[1]))
+X_test_scaled = X_test_scaled.reshape((X_test_scaled.shape[0], 1, X_test_scaled.shape[1]))
+
+X_train_lstm = np.concatenate([X_train_scaled, rf_train_pred_reshaped], axis=2)
+X_test_lstm = np.concatenate([X_test_scaled, rf_test_pred_reshaped], axis=2)
 
 # Step 3: Train the LSTM model on the combined features
 lstm_model = Sequential()
-lstm_model.add(LSTM(units=50, activation='relu', input_shape=(X_train_lstm.shape[1], X_train_lstm.shape[2])))
+lstm_model.add(LSTM(units=64, activation='relu', input_shape=(X_train_lstm.shape[1], X_train_lstm.shape[2])))
 lstm_model.add(Dense(units=1))
 
 # Compile the model
@@ -97,7 +113,7 @@ lstm_model.fit(X_train_lstm, y_train_scaled, epochs=20, batch_size=32, verbose=2
 y_pred_scaled = lstm_model.predict(X_test_lstm)
 y_pred = y_pred_scaled * y_train_std + y_train_mean  # Inverse scaling
 
-# Evaluate the model
+# Evaluate the hybrid model
 mse = mean_squared_error(y_test, y_pred)
 mae = mean_absolute_error(y_test, y_pred)
 r2 = r2_score(y_test, y_pred)
@@ -106,12 +122,4 @@ print(f"Mean Squared Error: {mse:.4f}")
 print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
 
-# Plot the predicted vs actual prices
-plt.figure(figsize=(10, 6))
-plt.scatter(y_test, y_pred, color='blue', label='Predicted vs Actual')
-plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], color='red', linewidth=2, label='Ideal Prediction')
-plt.title('Hybrid Model (RF + LSTM): Predicted vs Actual Prices')
-plt.xlabel('True Price')
-plt.ylabel('Predicted Price')
-plt.legend()
-plt.show()
+

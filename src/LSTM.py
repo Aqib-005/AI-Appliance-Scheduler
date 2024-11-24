@@ -3,10 +3,10 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
-import seaborn as sns
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, LSTM
 from tensorflow.keras.optimizers import Adam
+from keras_tuner import RandomSearch
 
 # Load the data
 data = pd.read_csv("data/merged-data.csv")
@@ -56,44 +56,48 @@ scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
+# Reshape the features for LSTM input
+X_train_scaled = X_train_scaled.reshape(X_train_scaled.shape[0], 1, X_train_scaled.shape[1])
+X_test_scaled = X_test_scaled.reshape(X_test_scaled.shape[0], 1, X_test_scaled.shape[1])
+
 # Normalize the target
 y_train_mean, y_train_std = y_train.mean(), y_train.std()
 y_train_scaled = (y_train - y_train_mean) / y_train_std
 
-# Reshape input for LSTM (3D tensor: [samples, time steps, features])
-X_train_scaled = X_train_scaled.reshape((X_train_scaled.shape[0], 1, X_train_scaled.shape[1]))
-X_test_scaled = X_test_scaled.reshape((X_test_scaled.shape[0], 1, X_test_scaled.shape[1]))
+# Define model-building function for Keras Tuner
+def build_model(hp):
+    model = Sequential()
+    model.add(LSTM(units=hp.Int('units', min_value=32, max_value=128, step=16), activation='relu',
+                   input_shape=(X_train_scaled.shape[1], X_train_scaled.shape[2])))
+    model.add(Dense(units=1))
+    model.compile(optimizer=Adam(learning_rate=hp.Choice('learning_rate', [0.001, 0.01, 0.1])),
+                  loss='mean_squared_error')
+    return model
 
-# Define the LSTM model
-model = Sequential()
-model.add(LSTM(units=50, activation='relu', input_shape=(X_train_scaled.shape[1], X_train_scaled.shape[2])))
-model.add(Dense(units=1))
+# Hyperparameter tuning
+tuner = RandomSearch(build_model, objective='val_loss', max_trials=5, executions_per_trial=1,
+                     directory='tuner_logs', project_name='LSTM')
+tuner.search(X_train_scaled, y_train_scaled, epochs=10, validation_split=0.2, verbose=2)
+best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
 
-# Compile the model
-model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
-
-# Train the model
+# Train the best model
+model = tuner.hypermodel.build(best_hps)
 model.fit(X_train_scaled, y_train_scaled, epochs=20, batch_size=32, verbose=2)
 
-# Predict on the test data
+# Predictions and evaluation
 y_pred_scaled = model.predict(X_test_scaled)
-y_pred = y_pred_scaled * y_train_std + y_train_mean  
-
-# Evaluate the model
+y_pred = y_pred_scaled * y_train_std + y_train_mean
 mse = mean_squared_error(y_test, y_pred)
 mae = mean_absolute_error(y_test, y_pred)
 r2 = r2_score(y_test, y_pred)
 
+print(f"Best Hyperparameters: {best_hps.values}")
 print(f"Mean Squared Error: {mse:.4f}")
 print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
 
-# Plot the predicted vs actual prices
-plt.figure(figsize=(10, 6))
 plt.scatter(y_test, y_pred, color='blue', label='Predicted vs Actual')
-plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], color='red', linewidth=2, label='Ideal Prediction')
+plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], color='red', label='Ideal Prediction')
 plt.title('LSTM: Predicted vs Actual Prices')
-plt.xlabel('True Price')
-plt.ylabel('Predicted Price')
 plt.legend()
 plt.show()

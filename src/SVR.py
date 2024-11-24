@@ -61,12 +61,21 @@ y_train_scaled = (y_train - y_train_mean) / y_train_std
 
 # SVR Hyperparameter Tuning using GridSearchCV
 param_grid = {
-    'C': [5, 10, 20],
-    'gamma': [0.005, 0.01, 0.02],
-    'epsilon': [5, 10, 15]
+    'C': [1, 10, 100],
+    'gamma': ['scale', 'auto', 0.001, 0.01, 0.1],
+    'epsilon': [0.01, 0.1, 0.5, 1]
 }
 svr = SVR(kernel='rbf')
-grid_search = GridSearchCV(svr, param_grid, cv=3, scoring='neg_mean_squared_error', verbose=2)
+
+# Perform GridSearchCV for hyperparameter tuning
+grid_search = GridSearchCV(
+    svr, 
+    param_grid, 
+    cv=3, 
+    scoring='neg_mean_squared_error', 
+    verbose=2, 
+    n_jobs=-1
+)
 grid_search.fit(X_train_scaled, y_train_scaled)
 
 # Best model
@@ -85,3 +94,4 @@ r2 = r2_score(y_test, y_pred)
 print(f"Mean Squared Error: {mse:.4f}")
 print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
+
