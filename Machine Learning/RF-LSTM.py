@@ -169,3 +169,13 @@ plt.barh(feature_names, importances, color='skyblue')
 plt.xlabel('Feature Importance')
 plt.title('Random Forest Feature Importance')
 plt.show()
+
+# Save Random Forest model
+import joblib
+joblib.dump(best_rf, 'random_forest_model.pkl')
+
+# Save LSTM model
+lstm_model.save('lstm_model.h5')
+
+# Save the scaler (for feature normalization)
+joblib.dump(scaler, 'scaler.pkl')
