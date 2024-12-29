@@ -6,8 +6,9 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.ensemble import RandomForestRegressor
 import matplotlib.pyplot as plt
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM
+from tensorflow.keras.layers import Dense, LSTM, Dropout
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
 
 # Load the data
 data = pd.read_csv("data/merged-data.csv")
@@ -102,14 +103,27 @@ X_test_lstm = np.concatenate([X_test_scaled.reshape((-1, 1, X_test_scaled.shape[
 # Adjust the LSTM model
 lstm_model = Sequential()
 lstm_model.add(LSTM(units=64, activation='relu', return_sequences=True, input_shape=(X_train_lstm.shape[1], X_train_lstm.shape[2])))
+lstm_model.add(Dropout(0.2))  # Add dropout for regularization
 lstm_model.add(LSTM(units=32, activation='relu'))
+lstm_model.add(Dropout(0.2))  # Add dropout for regularization
 lstm_model.add(Dense(units=1))
 
-# Compile with regularization (dropout can be added to LSTM layers if overfitting is observed)
+# Compile the model
 lstm_model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
 
+# Add early stopping to prevent overfitting
+early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+
 # Train the LSTM model on residuals
-lstm_model.fit(X_train_lstm, rf_train_residuals, epochs=30, batch_size=32, verbose=2, validation_split=0.2)
+history = lstm_model.fit(
+    X_train_lstm, 
+    rf_train_residuals, 
+    epochs=50,  # Increase epochs since early stopping will handle overfitting
+    batch_size=32, 
+    verbose=2, 
+    validation_split=0.2, 
+    callbacks=[early_stopping]
+)
 
 # Predict residuals with LSTM
 lstm_residual_predictions = lstm_model.predict(X_test_lstm)
@@ -137,5 +151,21 @@ plt.xlabel("Test Samples")
 plt.ylabel("Price Germany/Luxembourg [Euro/MWh]")
 plt.show()
 
+# Residual analysis
+residuals = y_test - final_hybrid_predictions
+plt.figure(figsize=(10, 6))
+plt.scatter(final_hybrid_predictions, residuals, color='blue')
+plt.axhline(y=0, color='red', linestyle='--')
+plt.xlabel('Predicted Prices')
+plt.ylabel('Residuals')
+plt.title('Residual Plot for Hybrid Model')
+plt.show()
 
-
+# Feature importance from Random Forest
+importances = best_rf.feature_importances_
+feature_names = features
+plt.figure(figsize=(10, 6))
+plt.barh(feature_names, importances, color='skyblue')
+plt.xlabel('Feature Importance')
+plt.title('Random Forest Feature Importance')
+plt.show()
