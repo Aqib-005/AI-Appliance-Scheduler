@@ -29,7 +29,7 @@ class PredictionController extends Controller
         $appliances = $request->appliances;
 
         //  get predicted prices
-        $process = new Process(['C:\\Python312\\python.exe', base_path('ml_models/predict.py')]);
+        $process = new Process(['C:\Users\shiha\AppData\Local\Programs\Python\Python312\python.exe', base_path('ml_models/predict.py')]);
         $process->run();
 
         if (!$process->isSuccessful()) {
