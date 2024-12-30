@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Process\Exception\ProcessFailedException;
+use Illuminate\Support\Facades\Log;
 
 class PredictionController extends Controller
 {
@@ -17,6 +18,8 @@ class PredictionController extends Controller
     // Handle  scheduling
     public function schedule(Request $request)
     {
+        //echo shell_exec('C:\Users\shiha\AppData\Local\Programs\Python\Python312\python.exe C:\Users\shiha\OneDrive\Desktop\FinalYearProject\FYProject\electricity_price_app\ml_models\predict.py');
+
         // Validate  user input
         $request->validate([
             'appliances' => 'required|array',
@@ -29,8 +32,18 @@ class PredictionController extends Controller
         $appliances = $request->appliances;
 
         //  get predicted prices
-        $process = new Process(['C:\Users\shiha\AppData\Local\Programs\Python\Python312\python.exe', base_path('ml_models/predict.py')]);
+        $process = new Process([
+            'C:\\Users\\shiha\\AppData\\Local\\Programs\\Python\\Python312\\python.exe',
+            base_path('ml_models/predict.py')
+        ]);
+        $process->setWorkingDirectory(base_path());
         $process->run();
+
+        if (!$process->isSuccessful()) {
+            Log::error('Python script failed: ' . $process->getErrorOutput());
+        } else {
+            Log::info('Python script output: ' . $process->getOutput());
+        }
 
         if (!$process->isSuccessful()) {
             throw new ProcessFailedException($process);
