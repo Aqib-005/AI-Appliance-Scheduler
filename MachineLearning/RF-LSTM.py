@@ -142,40 +142,81 @@ print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
 
 # Visualize performance
-plt.figure(figsize=(10, 6))
-plt.plot(y_test.values, label="True Values", color='blue')
-plt.plot(final_hybrid_predictions, label="Hybrid Predictions", color='orange')
-plt.legend()
-plt.title("Hybrid Model Predictions vs True Values")
-plt.xlabel("Test Samples")
-plt.ylabel("Price Germany/Luxembourg [Euro/MWh]")
-plt.show()
+# plt.figure(figsize=(10, 6))
+# plt.plot(y_test.values, label="True Values", color='blue')
+# plt.plot(final_hybrid_predictions, label="Hybrid Predictions", color='orange')
+# plt.legend()
+# plt.title("Hybrid Model Predictions vs True Values")
+# plt.xlabel("Test Samples")
+# plt.ylabel("Price Germany/Luxembourg [Euro/MWh]")
+# plt.show()
 
-# Residual analysis
-residuals = y_test - final_hybrid_predictions
-plt.figure(figsize=(10, 6))
-plt.scatter(final_hybrid_predictions, residuals, color='blue')
-plt.axhline(y=0, color='red', linestyle='--')
-plt.xlabel('Predicted Prices')
-plt.ylabel('Residuals')
-plt.title('Residual Plot for Hybrid Model')
-plt.show()
+# # Residual analysis
+# residuals = y_test - final_hybrid_predictions
+# plt.figure(figsize=(10, 6))
+# plt.scatter(final_hybrid_predictions, residuals, color='blue')
+# plt.axhline(y=0, color='red', linestyle='--')
+# plt.xlabel('Predicted Prices')
+# plt.ylabel('Residuals')
+# plt.title('Residual Plot for Hybrid Model')
+# plt.show()
 
-# Feature importance from Random Forest
-importances = best_rf.feature_importances_
-feature_names = features
-plt.figure(figsize=(10, 6))
-plt.barh(feature_names, importances, color='skyblue')
-plt.xlabel('Feature Importance')
-plt.title('Random Forest Feature Importance')
-plt.show()
 
-# Save Random Forest model
-import joblib
-joblib.dump(best_rf, 'random_forest_model.pkl')
+# def create_lagged_features(data, lags=24):
+#     lagged_data = pd.DataFrame()
+#     for lag in range(1, lags + 1):
+#         lagged_data[f"Lag_{lag}"] = data.shift(lag)
+#     lagged_data = lagged_data.dropna()
+#     return lagged_data
 
-# Save LSTM model
-lstm_model.save('lstm_model.h5')
+# # Function for weekly forecasting
+# def predict_weekly_forecast(data, target, lags=24, forecast_horizon=168):
+#     # Create lagged features
+#     lagged_features = create_lagged_features(data[target], lags)
+    
+#     # Fit a new scaler specifically for lagged features
+#     lagged_scaler = StandardScaler()
+#     lagged_features_scaled = lagged_scaler.fit_transform(lagged_features)
 
-# Save the scaler (for feature normalization)
-joblib.dump(scaler, 'scaler.pkl')
+#     # Train-test split for multi-step forecasting
+#     train_lagged = lagged_features_scaled[:len(train_data) - lags]
+#     test_lagged = lagged_features_scaled[len(train_data) - lags:]
+
+#     train_target = data[target][lags:len(train_data)].values
+#     test_target = data[target][len(train_data) + lags:].values
+
+#     # Reshape lagged data for LSTM
+#     train_lagged_reshaped = train_lagged.reshape((train_lagged.shape[0], lags, 1))
+#     test_lagged_reshaped = test_lagged.reshape((test_lagged.shape[0], lags, 1))
+
+#     # Define and train the LSTM model
+#     lstm_forecast_model = Sequential()
+#     lstm_forecast_model.add(LSTM(units=64, activation='relu', return_sequences=True, input_shape=(lags, 1)))
+#     lstm_forecast_model.add(Dropout(0.2))
+#     lstm_forecast_model.add(LSTM(units=32, activation='relu'))
+#     lstm_forecast_model.add(Dense(units=1))
+
+#     lstm_forecast_model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+
+#     lstm_forecast_model.fit(train_lagged_reshaped, train_target, epochs=20, batch_size=32, verbose=2)
+
+#     # Make predictions
+#     forecast_predictions = lstm_forecast_model.predict(test_lagged_reshaped)
+#     mse = mean_squared_error(test_target[:forecast_horizon], forecast_predictions[:forecast_horizon])
+#     # Print the MSE
+#     print(f"Weekly Prediction MSE: {mse:.4f}")
+
+#     # Plot the predictions
+#     plt.figure(figsize=(10, 6))
+#     plt.plot(test_target[:forecast_horizon], label="True Values", color='blue')
+#     plt.plot(forecast_predictions.flatten()[:forecast_horizon], label="Predicted Values", color='orange')
+#     plt.legend()
+#     plt.title("Weekly Electricity Price Predictions")
+#     plt.xlabel("Time Steps (Hours)")
+#     plt.ylabel("Price Germany/Luxembourg [Euro/MWh]")
+#     plt.show()
+    
+#     return forecast_predictions
+
+# # Call the weekly forecasting function
+# predict_weekly_forecast(data, target)
