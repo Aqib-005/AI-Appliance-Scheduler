@@ -1,13 +1,10 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.ensemble import RandomForestRegressor
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM, Dropout
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping
+import xgboost as xgb
+from prophet import Prophet
 import matplotlib.pyplot as plt
 
 # Load the data
@@ -23,11 +20,17 @@ data['Year'] = data['Start date/time'].dt.year
 data['Month'] = data['Start date/time'].dt.month
 data['Day'] = data['Start date/time'].dt.day
 data['Hour'] = data['Start date/time'].dt.hour
+data['DayOfWeek'] = data['Start date/time'].dt.dayofweek  # Add day of the week
 
 # Create lagged features for target variable
 data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
 
-# Drop rows with missing values after lagging
+# Add rolling averages for features
+data['Rolling_Temp_24h'] = data['temperature_2m (°C)'].rolling(window=24).mean()
+data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(window=24).mean()
+data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
+
+# Drop rows with missing values after lagging and rolling
 data = data.dropna()
 
 # Feature selection based on correlation and engineering
@@ -37,12 +40,13 @@ features = [
     'Total (grid consumption) [MWh]', 
     'Day', 
     'Hour', 
+    'DayOfWeek',  # Added day of the week
+    'Rolling_Temp_24h',  # Added rolling averages
+    'Rolling_Wind_24h',
+    'Rolling_Load_24h',
     'Lag_Price'
 ]
 target = 'Price Germany/Luxembourg [Euro/MWh]'
-
-# Subset the data
-data_subset = data[features + [target]]
 
 # Split data chronologically for train-test
 train_data = data[data['Start date/time'] < '2023-09-30']
@@ -58,93 +62,99 @@ scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# Normalize the target
-y_train_mean, y_train_std = y_train.mean(), y_train.std()
-y_train_scaled = (y_train - y_train_mean) / y_train_std
+# Step 1: Train Prophet model
+prophet_train_data = train_data[['Start date/time', target]].rename(columns={'Start date/time': 'ds', target: 'y'})
+prophet_model = Prophet(
+    changepoint_prior_scale=0.01,  # Reduce to make trends less flexible
+    seasonality_prior_scale=10.0,  # Increase to capture stronger seasonality
+    yearly_seasonality=True,
+    weekly_seasonality=True,
+    daily_seasonality=True
+)
+prophet_model.fit(prophet_train_data)
 
-# Step 1: Hyperparameter tuning for Random Forest
-rf_param_grid = {
-    'n_estimators': [50, 100, 200],
-    'max_depth': [None, 10, 20, 30],
-    'min_samples_split': [2, 5, 10],
-    'min_samples_leaf': [1, 2, 4]
+# Generate predictions for the training data
+prophet_train_pred = prophet_model.predict(prophet_train_data)['yhat'].values
+
+# Generate predictions for the test data
+prophet_test_pred = prophet_model.predict(test_data[['Start date/time']].rename(columns={'Start date/time': 'ds'}))['yhat'].values
+
+# Add Prophet predictions as a feature to XGBoost
+X_train_scaled = np.hstack([X_train_scaled, prophet_train_pred.reshape(-1, 1)])  # Add Prophet predictions
+X_test_scaled = np.hstack([X_test_scaled, prophet_test_pred.reshape(-1, 1)])  # Add Prophet predictions
+
+# Step 2: Hyperparameter tuning for XGBoost with TimeSeriesSplit
+tscv = TimeSeriesSplit(n_splits=5)  # Time-series cross-validation
+
+# Expanded hyperparameter grid
+xgb_param_grid = {
+    'n_estimators': [50, 100, 200, 300, 500],
+    'max_depth': [3, 6, 9, 12, 15],
+    'learning_rate': [0.001, 0.01, 0.1, 0.2, 0.3],
+    'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
+    'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
+    'gamma': [0, 0.1, 0.2, 0.3, 0.4],
+    'min_child_weight': [1, 3, 5, 7],
+    'reg_alpha': [0, 0.1, 1, 10],
+    'reg_lambda': [0, 0.1, 1, 10]
 }
 
-rf_random = RandomizedSearchCV(
-    estimator=RandomForestRegressor(random_state=42),
-    param_distributions=rf_param_grid,
-    n_iter=20,
-    cv=3,
+xgb_random = RandomizedSearchCV(
+    estimator=xgb.XGBRegressor(random_state=42),
+    param_distributions=xgb_param_grid,
+    n_iter=50,  # Increased number of iterations
+    cv=tscv,  # Use TimeSeriesSplit for cross-validation
     verbose=2,
     random_state=42,
     n_jobs=-1
 )
 
-rf_random.fit(X_train, y_train)
-best_rf = rf_random.best_estimator_
-print(f"Best RF Parameters: {rf_random.best_params_}")
+# Train the model with the Prophet predictions as an additional feature
+xgb_random.fit(X_train_scaled, y_train)
+best_xgb = xgb_random.best_estimator_
+print(f"Best XGBoost Parameters: {xgb_random.best_params_}")
 
-# Predict with the best RF model
-rf_train_pred = best_rf.predict(X_train)
-rf_test_pred = best_rf.predict(X_test)
-
-# Calculate residuals for Random Forest predictions
-rf_train_residuals = y_train - rf_train_pred
-rf_test_residuals = y_test - rf_test_pred
-
-# Reshape residuals to 3D for LSTM
-rf_train_residuals_reshaped = rf_train_residuals.values.reshape(-1, 1, 1)
-rf_test_residuals_reshaped = rf_test_residuals.values.reshape(-1, 1, 1)
-
-# Prepare input data for LSTM by appending residuals
-X_train_lstm = np.concatenate([X_train_scaled.reshape((-1, 1, X_train_scaled.shape[1])), rf_train_residuals_reshaped], axis=2)
-X_test_lstm = np.concatenate([X_test_scaled.reshape((-1, 1, X_test_scaled.shape[1])), rf_test_residuals_reshaped], axis=2)
-
-# Adjust the LSTM model
-lstm_model = Sequential()
-lstm_model.add(LSTM(units=64, activation='relu', return_sequences=True, input_shape=(X_train_lstm.shape[1], X_train_lstm.shape[2])))
-lstm_model.add(Dropout(0.2))  # Add dropout for regularization
-lstm_model.add(LSTM(units=32, activation='relu'))
-lstm_model.add(Dropout(0.2))  # Add dropout for regularization
-lstm_model.add(Dense(units=1))
-
-# Compile the model
-lstm_model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
-
-# Add early stopping to prevent overfitting
-early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-
-# Train the LSTM model on residuals
-history = lstm_model.fit(
-    X_train_lstm, 
-    rf_train_residuals, 
-    epochs=50,  # Increase epochs since early stopping will handle overfitting
-    batch_size=32, 
-    verbose=2, 
-    validation_split=0.2, 
-    callbacks=[early_stopping]
-)
-
-# Predict residuals with LSTM
-lstm_residual_predictions = lstm_model.predict(X_test_lstm)
-
-# Combine RF predictions with LSTM residuals for final prediction
-final_hybrid_predictions = rf_test_pred + lstm_residual_predictions.flatten()
+# Predict with the best XGBoost model
+xgb_test_pred = best_xgb.predict(X_test_scaled)
 
 # Evaluate the hybrid model
-mse = mean_squared_error(y_test, final_hybrid_predictions)
-mae = mean_absolute_error(y_test, final_hybrid_predictions)
-r2 = r2_score(y_test, final_hybrid_predictions)
+mse_hybrid = mean_squared_error(y_test, xgb_test_pred)
+mae_hybrid = mean_absolute_error(y_test, xgb_test_pred)
+r2_hybrid = r2_score(y_test, xgb_test_pred)
 
-print("Hybrid Model Evaluation:")
-print(f"Mean Squared Error: {mse:.4f}")
-print(f"Mean Absolute Error: {mae:.4f}")
-print(f"R-squared: {r2:.4f}")
+print("Hybrid Model (Prophet + XGBoost) Evaluation:")
+print(f"Mean Squared Error: {mse_hybrid:.4f}")
+print(f"Mean Absolute Error: {mae_hybrid:.4f}")
+print(f"R-squared: {r2_hybrid:.4f}")
+
+# Step 3: Forecast target variable using Prophet
+prophet_test_pred = prophet_model.predict(test_data[['Start date/time']].rename(columns={'Start date/time': 'ds'}))['yhat']
+mse_prophet = mean_squared_error(y_test, prophet_test_pred)
+print(f"Prophet MSE: {mse_prophet}")
+
+# Step 4: Feature Importance Analysis
+xgb.plot_importance(best_xgb)
+plt.show()
+
+# Step 5: Ensemble Approach
+ensemble_pred = (prophet_test_pred + xgb_test_pred) / 2
+mse_ensemble = mean_squared_error(y_test, ensemble_pred)
+print(f"Ensemble MSE: {mse_ensemble}")
+
+# Step 6: Use Plain XGBoost (if Prophet is not adding value)
+# Train XGBoost without Prophet predictions
+xgb_random.fit(X_train_scaled[:, :-1], y_train)  # Exclude Prophet predictions
+best_xgb = xgb_random.best_estimator_
+xgb_test_pred = best_xgb.predict(X_test_scaled[:, :-1])
+
+# Evaluate plain XGBoost
+mse_xgb = mean_squared_error(y_test, xgb_test_pred)
+print(f"Plain XGBoost MSE: {mse_xgb}")
 
 # Predict for the coming week
 # Assuming 'data' contains the latest available data
 last_date = data['Start date/time'].max()
-future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='H')
+future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='h')  # Use 'h' instead of 'H'
 
 # Create future DataFrame
 future_data = pd.DataFrame(index=future_dates)
@@ -152,41 +162,57 @@ future_data['Year'] = future_data.index.year
 future_data['Month'] = future_data.index.month
 future_data['Day'] = future_data.index.day
 future_data['Hour'] = future_data.index.hour
+future_data['DayOfWeek'] = future_data.index.dayofweek  # Add day of the week
 
-# Add lagged price feature
+# Initialize Lag_Price with the last observed price
 future_data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
 
-# Add other features (assuming they are constant or can be forecasted)
-# For simplicity, let's assume they are constant
-future_data['temperature_2m (°C)'] = data['temperature_2m (°C)'].iloc[-1]
-future_data['wind_speed_100m (km/h)'] = data['wind_speed_100m (km/h)'].iloc[-1]
-future_data['Total (grid consumption) [MWh]'] = data['Total (grid consumption) [MWh]'].iloc[-1]
+# Step 7: Forecast weather data (temperature and wind speed) using Prophet
+def forecast_feature(data, feature, periods=7*24):
+    # Prepare data for Prophet
+    feature_data = data[['Start date/time', feature]].rename(
+        columns={'Start date/time': 'ds', feature: 'y'}
+    )
+    
+    # Train Prophet model
+    model = Prophet()
+    model.fit(feature_data)
+    
+    # Forecast for future dates
+    future = model.make_future_dataframe(periods=periods, freq='h')  # Use 'h' instead of 'H'
+    forecast = model.predict(future)
+    
+    return forecast['yhat'].tail(periods).values
 
-# Scale the features
-future_data_scaled = scaler.transform(future_data[features])
+# Forecast temperature and wind speed
+future_data['temperature_2m (°C)'] = forecast_feature(data, 'temperature_2m (°C)')
+future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)')
 
-# Predict with Random Forest
-rf_future_pred = best_rf.predict(future_data[features])
+# Step 8: Forecast grid load using Prophet
+future_data['Total (grid consumption) [MWh]'] = forecast_feature(data, 'Total (grid consumption) [MWh]')
 
-# Calculate residuals for Random Forest predictions
-rf_future_residuals = np.zeros_like(rf_future_pred)  # Assuming residuals are zero for future predictions
+# Add rolling averages for future data
+future_data['Rolling_Temp_24h'] = future_data['temperature_2m (°C)'].rolling(window=24).mean()
+future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(window=24).mean()
+future_data['Rolling_Load_24h'] = future_data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
 
-# Reshape residuals to 3D for LSTM
-rf_future_residuals_reshaped = rf_future_residuals.reshape(-1, 1, 1)
+# Fill NaN values in rolling averages (first 23 rows)
+future_data = future_data.bfill()  # Use bfill() instead of fillna(method='bfill')
 
-# Prepare input data for LSTM by appending residuals
-X_future_lstm = np.concatenate([future_data_scaled.reshape((-1, 1, future_data_scaled.shape[1])), rf_future_residuals_reshaped], axis=2)
+# Step 9: Forecast target variable using Prophet
+prophet_future_pred = prophet_model.predict(future_data.reset_index().rename(columns={'index': 'ds'}))['yhat'].values
 
-# Predict residuals with LSTM
-lstm_future_residual_predictions = lstm_model.predict(X_future_lstm)
+# Add Prophet predictions as a feature to XGBoost
+future_data_scaled = scaler.transform(future_data[features])  # Exclude Prophet predictions
+future_data_scaled = np.hstack([future_data_scaled, prophet_future_pred.reshape(-1, 1)])  # Add Prophet predictions
 
-# Combine RF predictions with LSTM residuals for final prediction
-future_hybrid_predictions = rf_future_pred + lstm_future_residual_predictions.flatten()
+# Predict future prices using the hybrid model
+xgb_future_pred = best_xgb.predict(future_data_scaled)
 
 # Create a DataFrame for the predictions
 future_predictions_df = pd.DataFrame({
     'Start date/time': future_dates,  # The future dates generated earlier
-    'Predicted Price [Euro/MWh]': future_hybrid_predictions  # The predicted prices
+    'Predicted Price [Euro/MWh]': xgb_future_pred  # The predicted prices
 })
 
 # Print the predictions with dates
