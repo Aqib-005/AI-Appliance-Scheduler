@@ -1,0 +1,65 @@
+XGBoost:
+Best XGBoost Parameters: {'subsample': 0.8, 'reg_lambda': 10, 'reg_alpha': 0.1, 'n_estimators': 200, 'min_child_weight': 5, 'max_depth': 3, 'learning_rate': 0.1, 'gamma': 0.4, 'colsample_bytree': 0.9}
+XGBoost Model Evaluation:
+Mean Squared Error: 177.1749
+Mean Absolute Error: 8.3380
+R-squared: 0.9075
+
+Evaluation Metrics:
+Mean Squared Error: 682.8692
+Mean Absolute Error: 20.5485
+R-squared: 0.4686
+Root Mean Squared Error: 26.1318
+
+
+LSTM:
+Best Hyperparameters: {'units': 32, 'learning_rate': 0.01}
+Mean Squared Error: 196.2479
+Mean Absolute Error: 9.1344
+R-squared: 0.8975
+
+Evaluation Metrics:
+Mean Squared Error: 971.2855
+Mean Absolute Error: 22.9019
+R-squared: 0.2441
+Root Mean Squared Error: 31.1655
+
+
+RandomForest:
+Best parameters: {'n_estimators': 400, 'min_samples_split': 10, 'min_samples_leaf': 1, 'max_depth': 40}
+Mean Squared Error: 184.6814
+Mean Absolute Error: 8.8617
+R-squared: 0.9036
+
+Evaluation Metrics:
+Mean Squared Error: 901.5882
+Mean Absolute Error: 23.9381
+R-squared: 0.2983
+Root Mean Squared Error: 30.0265
+
+
+
+Hybrid Model (Prophet + XGBoost) Evaluation:
+Mean Squared Error: 265.7491
+Mean Absolute Error: 10.0479
+R-squared: 0.8613
+Prophet MSE: 5256.8687658549525
+Ensemble MSE: 1718.276719962836
+
+Evaluation Metrics:
+Mean Squared Error: 4681.2874
+Mean Absolute Error: 61.9796
+R-squared: -2.6432
+Root Mean Squared Error: 68.4199
+
+
+Ensemble Model Evaluation:
+Mean Squared Error: 167.1630
+Mean Absolute Error: 8.1677
+R-squared: 0.9127
+
+Evaluation Metrics:
+Mean Squared Error: 683.6102
+Mean Absolute Error: 20.2745
+R-squared: 0.4680
+Root Mean Squared Error: 26.1459
