@@ -4,8 +4,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import xgboost as xgb
+from sklearn.ensemble import RandomForestRegressor
 from prophet import Prophet
 import matplotlib.pyplot as plt
+from scipy.optimize import minimize
 
 # Load the data
 data = pd.read_csv("data/merged-data.csv")
@@ -48,6 +50,9 @@ features = [
 ]
 target = 'Price Germany/Luxembourg [Euro/MWh]'
 
+# Subset the data
+data_subset = data[features + [target]]
+
 # Split data chronologically for train-test
 train_data = data[data['Start date/time'] < '2023-09-30']
 test_data = data[data['Start date/time'] >= '2023-09-30']
@@ -62,97 +67,94 @@ scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# Step 1: Train Prophet model
-prophet_train_data = train_data[['Start date/time', target]].rename(columns={'Start date/time': 'ds', target: 'y'})
-prophet_model = Prophet(
-    changepoint_prior_scale=0.01,  # Reduce to make trends less flexible
-    seasonality_prior_scale=10.0,  # Increase to capture stronger seasonality
-    yearly_seasonality=True,
-    weekly_seasonality=True,
-    daily_seasonality=True
-)
-prophet_model.fit(prophet_train_data)
-
-# Generate predictions for the training data
-prophet_train_pred = prophet_model.predict(prophet_train_data)['yhat'].values
-
-# Generate predictions for the test data
-prophet_test_pred = prophet_model.predict(test_data[['Start date/time']].rename(columns={'Start date/time': 'ds'}))['yhat'].values
-
-# Add Prophet predictions as a feature to XGBoost
-X_train_scaled = np.hstack([X_train_scaled, prophet_train_pred.reshape(-1, 1)])  # Add Prophet predictions
-X_test_scaled = np.hstack([X_test_scaled, prophet_test_pred.reshape(-1, 1)])  # Add Prophet predictions
-
-# Step 2: Hyperparameter tuning for XGBoost with TimeSeriesSplit
-tscv = TimeSeriesSplit(n_splits=5)  # Time-series cross-validation
-
-# Expanded hyperparameter grid
+# Step 1: Train XGBoost model with expanded hyperparameter search space
 xgb_param_grid = {
-    'n_estimators': [50, 100, 200, 300, 500],
-    'max_depth': [3, 6, 9, 12, 15],
-    'learning_rate': [0.001, 0.01, 0.1, 0.2, 0.3],
+    'n_estimators': [100, 200, 300, 400, 500, 600, 700],
+    'max_depth': [3, 6, 9, 12, 15, 20],
+    'learning_rate': [0.001, 0.01, 0.05, 0.1, 0.2, 0.3],
     'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
     'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
-    'gamma': [0, 0.1, 0.2, 0.3, 0.4],
-    'min_child_weight': [1, 3, 5, 7],
-    'reg_alpha': [0, 0.1, 1, 10],
-    'reg_lambda': [0, 0.1, 1, 10]
+    'gamma': [0, 0.1, 0.2, 0.3, 0.4, 0.5],
+    'min_child_weight': [1, 3, 5, 7, 10],
+    'reg_alpha': [0, 0.1, 1, 10, 100],  # Regularization (L1)
+    'reg_lambda': [0, 0.1, 1, 10, 100]  # Regularization (L2)
 }
 
 xgb_random = RandomizedSearchCV(
     estimator=xgb.XGBRegressor(random_state=42),
     param_distributions=xgb_param_grid,
-    n_iter=50,  # Increased number of iterations
-    cv=tscv,  # Use TimeSeriesSplit for cross-validation
+    n_iter=100,  # Increased number of iterations
+    cv=TimeSeriesSplit(n_splits=5),  # Use TimeSeriesSplit for cross-validation
     verbose=2,
     random_state=42,
     n_jobs=-1
 )
 
-# Train the model with the Prophet predictions as an additional feature
 xgb_random.fit(X_train_scaled, y_train)
 best_xgb = xgb_random.best_estimator_
 print(f"Best XGBoost Parameters: {xgb_random.best_params_}")
 
-# Predict with the best XGBoost model
-xgb_test_pred = best_xgb.predict(X_test_scaled)
+# Step 2: Train Random Forest model with expanded hyperparameter search space
+rf_param_dist = {
+    'n_estimators': [100, 200, 300, 400, 500, 600, 700],
+    'max_depth': [10, 20, 30, 40, 50, 60, None],
+    'min_samples_split': [2, 5, 10, 15, 20],
+    'min_samples_leaf': [1, 2, 4, 6, 8],
+    'max_features': ['auto', 'sqrt', 'log2']
+}
 
-# Evaluate the hybrid model
-mse_hybrid = mean_squared_error(y_test, xgb_test_pred)
-mae_hybrid = mean_absolute_error(y_test, xgb_test_pred)
-r2_hybrid = r2_score(y_test, xgb_test_pred)
+rf_random = RandomizedSearchCV(
+    estimator=RandomForestRegressor(random_state=42),
+    param_distributions=rf_param_dist,
+    n_iter=50,  # Increased number of iterations
+    cv=3,  # Cross-validation splits
+    verbose=2,
+    random_state=42,
+    n_jobs=-1
+)
 
-print("Hybrid Model (Prophet + XGBoost) Evaluation:")
-print(f"Mean Squared Error: {mse_hybrid:.4f}")
-print(f"Mean Absolute Error: {mae_hybrid:.4f}")
-print(f"R-squared: {r2_hybrid:.4f}")
+rf_random.fit(X_train_scaled, y_train)
+best_rf = rf_random.best_estimator_
+print(f"Best Random Forest Parameters: {rf_random.best_params_}")
 
-# Step 3: Forecast target variable using Prophet
-prophet_test_pred = prophet_model.predict(test_data[['Start date/time']].rename(columns={'Start date/time': 'ds'}))['yhat']
-mse_prophet = mean_squared_error(y_test, prophet_test_pred)
-print(f"Prophet MSE: {mse_prophet}")
+# Step 3: Optimize Ensemble Weights
+def objective(weights):
+    ensemble_pred = (weights[0] * best_xgb.predict(X_test_scaled)) + (weights[1] * best_rf.predict(X_test_scaled))
+    return mean_squared_error(y_test, ensemble_pred)
 
-# Step 4: Feature Importance Analysis
-xgb.plot_importance(best_xgb)
-plt.show()
+# Initial weights
+initial_weights = [0.6, 0.4]
 
-# Step 5: Ensemble Approach
-ensemble_pred = (prophet_test_pred + xgb_test_pred) / 2
-mse_ensemble = mean_squared_error(y_test, ensemble_pred)
-print(f"Ensemble MSE: {mse_ensemble}")
+# Constraints: weights must sum to 1
+constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
 
-# Step 6: Use Plain XGBoost (if Prophet is not adding value)
-# Train XGBoost without Prophet predictions
-xgb_random.fit(X_train_scaled[:, :-1], y_train)  # Exclude Prophet predictions
-best_xgb = xgb_random.best_estimator_
-xgb_test_pred = best_xgb.predict(X_test_scaled[:, :-1])
+# Bounds: weights must be between 0 and 1
+bounds = [(0, 1), (0, 1)]
 
-# Evaluate plain XGBoost
-mse_xgb = mean_squared_error(y_test, xgb_test_pred)
-print(f"Plain XGBoost MSE: {mse_xgb}")
+# Optimize weights
+result = minimize(objective, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints)
+optimized_weights = result.x
+
+print(f"Optimized Weights: XGBoost = {optimized_weights[0]:.4f}, Random Forest = {optimized_weights[1]:.4f}")
+
+# Step 4: Ensemble Predictions with Optimized Weights
+def ensemble_predict(X, xgb_weight=optimized_weights[0], rf_weight=optimized_weights[1]):
+    xgb_pred = best_xgb.predict(X)
+    rf_pred = best_rf.predict(X)
+    return (xgb_weight * xgb_pred) + (rf_weight * rf_pred)
+
+# Evaluate the ensemble model
+ensemble_test_pred = ensemble_predict(X_test_scaled)
+mse = mean_squared_error(y_test, ensemble_test_pred)
+mae = mean_absolute_error(y_test, ensemble_test_pred)
+r2 = r2_score(y_test, ensemble_test_pred)
+
+print("Optimized Ensemble Model Evaluation:")
+print(f"Mean Squared Error: {mse:.4f}")
+print(f"Mean Absolute Error: {mae:.4f}")
+print(f"R-squared: {r2:.4f}")
 
 # Predict for the coming week
-# Assuming 'data' contains the latest available data
 last_date = data['Start date/time'].max()
 future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='h')  # Use 'h' instead of 'H'
 
@@ -162,12 +164,12 @@ future_data['Year'] = future_data.index.year
 future_data['Month'] = future_data.index.month
 future_data['Day'] = future_data.index.day
 future_data['Hour'] = future_data.index.hour
-future_data['DayOfWeek'] = future_data.index.dayofweek  # Add day of the week
+future_data['DayOfWeek'] = future_data.index.dayofweek
 
 # Initialize Lag_Price with the last observed price
 future_data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
 
-# Step 7: Forecast weather data (temperature and wind speed) using Prophet
+# Step 5: Forecast weather and grid load features for the next week
 def forecast_feature(data, feature, periods=7*24):
     # Prepare data for Prophet
     feature_data = data[['Start date/time', feature]].rename(
@@ -179,16 +181,14 @@ def forecast_feature(data, feature, periods=7*24):
     model.fit(feature_data)
     
     # Forecast for future dates
-    future = model.make_future_dataframe(periods=periods, freq='h')  # Use 'h' instead of 'H'
+    future = model.make_future_dataframe(periods=periods, freq='H')
     forecast = model.predict(future)
     
     return forecast['yhat'].tail(periods).values
 
-# Forecast temperature and wind speed
+# Forecast temperature, wind speed, and grid load
 future_data['temperature_2m (°C)'] = forecast_feature(data, 'temperature_2m (°C)')
 future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)')
-
-# Step 8: Forecast grid load using Prophet
 future_data['Total (grid consumption) [MWh]'] = forecast_feature(data, 'Total (grid consumption) [MWh]')
 
 # Add rolling averages for future data
@@ -197,29 +197,33 @@ future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(
 future_data['Rolling_Load_24h'] = future_data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
 
 # Fill NaN values in rolling averages (first 23 rows)
-future_data = future_data.bfill()  # Use bfill() instead of fillna(method='bfill')
+future_data.fillna(method='bfill', inplace=True)
 
-# Step 9: Forecast target variable using Prophet
-prophet_future_pred = prophet_model.predict(future_data.reset_index().rename(columns={'index': 'ds'}))['yhat'].values
-
-# Add Prophet predictions as a feature to XGBoost
-future_data_scaled = scaler.transform(future_data[features])  # Exclude Prophet predictions
-future_data_scaled = np.hstack([future_data_scaled, prophet_future_pred.reshape(-1, 1)])  # Add Prophet predictions
-
-# Predict future prices using the hybrid model
-xgb_future_pred = best_xgb.predict(future_data_scaled)
+# Iteratively predict future prices
+ensemble_future_pred = []
+for i in range(len(future_data)):
+    # Scale the features for the current timestep
+    future_data_scaled = scaler.transform(future_data.iloc[i:i+1][features])
+    
+    # Predict the price for the current timestep
+    pred = ensemble_predict(future_data_scaled)
+    ensemble_future_pred.append(pred[0])
+    
+    # Update Lag_Price for the next timestep
+    if i < len(future_data) - 1:
+        future_data.at[future_data.index[i+1], 'Lag_Price'] = pred[0]
 
 # Create a DataFrame for the predictions
 future_predictions_df = pd.DataFrame({
-    'Start date/time': future_dates,  # The future dates generated earlier
-    'Predicted Price [Euro/MWh]': xgb_future_pred  # The predicted prices
+    'Start date/time': future_dates,
+    'Predicted Price [Euro/MWh]': ensemble_future_pred
 })
 
 # Print the predictions with dates
 print("Predictions for the coming week:")
 print(future_predictions_df)
 
-# Load actual data
+# Load actual data (if available)
 actual_data = pd.DataFrame({
     'Start date/time': [
         '2024-10-01 00:00:00', '2024-10-01 01:00:00', '2024-10-01 02:00:00', 
