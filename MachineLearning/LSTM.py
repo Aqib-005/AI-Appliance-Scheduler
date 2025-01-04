@@ -4,7 +4,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM
+from tensorflow.keras.layers import Dense, LSTM, Dropout
 from tensorflow.keras.optimizers import Adam
 from keras_tuner import RandomSearch
 from prophet import Prophet
@@ -22,7 +22,7 @@ data['Year'] = data['Start date/time'].dt.year
 data['Month'] = data['Start date/time'].dt.month
 data['Day'] = data['Start date/time'].dt.day
 data['Hour'] = data['Start date/time'].dt.hour
-data['DayOfWeek'] = data['Start date/time'].dt.dayofweek  # Add day of the week
+data['DayOfWeek'] = data['Start date/time'].dt.dayofweek
 
 # Create lagged features for target variable
 data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
@@ -35,15 +35,15 @@ data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window
 # Drop rows with missing values after lagging and rolling
 data = data.dropna()
 
-# Feature selection based on correlation and engineering
+# Feature selection
 features = [
     'temperature_2m (°C)', 
     'wind_speed_100m (km/h)', 
     'Total (grid consumption) [MWh]', 
     'Day', 
     'Hour', 
-    'DayOfWeek',  # Added day of the week
-    'Rolling_Temp_24h',  # Added rolling averages
+    'DayOfWeek',
+    'Rolling_Temp_24h',
     'Rolling_Wind_24h',
     'Rolling_Load_24h',
     'Lag_Price'
@@ -68,39 +68,56 @@ X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
 # Reshape the features for LSTM input
-X_train_scaled = X_train_scaled.reshape(X_train_scaled.shape[0], 1, X_train_scaled.shape[1])
-X_test_scaled = X_test_scaled.reshape(X_test_scaled.shape[0], 1, X_test_scaled.shape[1])
+sequence_length = 24  # Use 24 hours as sequence length
+num_features = len(features)
+
+# Reshape input data to (num_samples, sequence_length, num_features)
+def create_sequences(data, sequence_length):
+    X = []
+    for i in range(len(data) - sequence_length):
+        X.append(data[i:i+sequence_length])
+    return np.array(X)
+
+X_train_scaled = create_sequences(X_train_scaled, sequence_length)
+X_test_scaled = create_sequences(X_test_scaled, sequence_length)
+
+# Adjust target data to match the sequences
+y_train_scaled = y_train[sequence_length:].values
+y_test_scaled = y_test[sequence_length:].values
 
 # Normalize the target
-y_train_mean, y_train_std = y_train.mean(), y_train.std()
-y_train_scaled = (y_train - y_train_mean) / y_train_std
+y_train_mean, y_train_std = y_train_scaled.mean(), y_train_scaled.std()
+y_train_scaled = (y_train_scaled - y_train_mean) / y_train_std
 
 # Define model-building function for Keras Tuner
 def build_model(hp):
     model = Sequential()
-    model.add(LSTM(units=hp.Int('units', min_value=32, max_value=128, step=16), activation='relu',
-                   input_shape=(X_train_scaled.shape[1], X_train_scaled.shape[2])))
+    model.add(LSTM(units=hp.Int('units', min_value=64, max_value=256, step=32), activation='relu',
+                   input_shape=(sequence_length, num_features), return_sequences=True))
+    model.add(Dropout(hp.Float('dropout', min_value=0.1, max_value=0.5, step=0.1)))
+    model.add(LSTM(units=hp.Int('units', min_value=32, max_value=128, step=16), activation='relu'))
+    model.add(Dropout(hp.Float('dropout', min_value=0.1, max_value=0.5, step=0.1)))
     model.add(Dense(units=1))
     model.compile(optimizer=Adam(learning_rate=hp.Choice('learning_rate', [0.001, 0.01, 0.1])),
                   loss='mean_squared_error')
     return model
 
 # Hyperparameter tuning
-tuner = RandomSearch(build_model, objective='val_loss', max_trials=5, executions_per_trial=1,
+tuner = RandomSearch(build_model, objective='val_loss', max_trials=10, executions_per_trial=1,
                      directory='tuner_logs', project_name='LSTM')
-tuner.search(X_train_scaled, y_train_scaled, epochs=10, validation_split=0.2, verbose=2)
+tuner.search(X_train_scaled, y_train_scaled, epochs=20, validation_split=0.2, verbose=2)
 best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
 
 # Train the best model
 model = tuner.hypermodel.build(best_hps)
-model.fit(X_train_scaled, y_train_scaled, epochs=20, batch_size=32, verbose=2)
+model.fit(X_train_scaled, y_train_scaled, epochs=50, batch_size=32, verbose=2)
 
 # Predictions and evaluation
 y_pred_scaled = model.predict(X_test_scaled)
 y_pred = y_pred_scaled * y_train_std + y_train_mean
-mse = mean_squared_error(y_test, y_pred)
-mae = mean_absolute_error(y_test, y_pred)
-r2 = r2_score(y_test, y_pred)
+mse = mean_squared_error(y_test_scaled, y_pred)
+mae = mean_absolute_error(y_test_scaled, y_pred)
+r2 = r2_score(y_test_scaled, y_pred)
 
 print(f"Best Hyperparameters: {best_hps.values}")
 print(f"Mean Squared Error: {mse:.4f}")
@@ -159,7 +176,11 @@ lstm_future_pred = []
 for i in range(len(future_data)):
     # Scale the features for the current timestep
     future_data_scaled = scaler.transform(future_data.iloc[i:i+1][features])
-    future_data_scaled = future_data_scaled.reshape(1, 1, len(features))
+    
+    # Reshape the data to match the LSTM input shape (1, sequence_length, num_features)
+    # Since we only have one timestep, we repeat it to match the sequence_length
+    future_data_scaled = np.tile(future_data_scaled, (sequence_length, 1))
+    future_data_scaled = future_data_scaled.reshape(1, sequence_length, num_features)
     
     # Predict the price for the current timestep
     pred_scaled = model.predict(future_data_scaled)

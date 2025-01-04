@@ -1,13 +1,13 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import xgboost as xgb
-from sklearn.ensemble import RandomForestRegressor
-from prophet import Prophet
 import matplotlib.pyplot as plt
-from scipy.optimize import minimize
+from prophet import Prophet
+import optuna
+from optuna.samplers import TPESampler
 
 # Load the data
 data = pd.read_csv("data/merged-data.csv")
@@ -22,7 +22,7 @@ data['Year'] = data['Start date/time'].dt.year
 data['Month'] = data['Start date/time'].dt.month
 data['Day'] = data['Start date/time'].dt.day
 data['Hour'] = data['Start date/time'].dt.hour
-data['DayOfWeek'] = data['Start date/time'].dt.dayofweek  # Add day of the week
+data['DayOfWeek'] = data['Start date/time'].dt.dayofweek
 
 # Create lagged features for target variable
 data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
@@ -35,15 +35,15 @@ data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window
 # Drop rows with missing values after lagging and rolling
 data = data.dropna()
 
-# Feature selection based on correlation and engineering
+# Feature selection
 features = [
     'temperature_2m (°C)', 
     'wind_speed_100m (km/h)', 
     'Total (grid consumption) [MWh]', 
     'Day', 
     'Hour', 
-    'DayOfWeek',  # Added day of the week
-    'Rolling_Temp_24h',  # Added rolling averages
+    'DayOfWeek',
+    'Rolling_Temp_24h',
     'Rolling_Wind_24h',
     'Rolling_Load_24h',
     'Lag_Price'
@@ -51,112 +51,80 @@ features = [
 target = 'Price Germany/Luxembourg [Euro/MWh]'
 
 # Subset the data
-data_subset = data[features + [target]]
-
-# Split data chronologically for train-test
-train_data = data[data['Start date/time'] < '2023-09-30']
-test_data = data[data['Start date/time'] >= '2023-09-30']
-
-X_train = train_data[features]
-y_train = train_data[target]
-X_test = test_data[features]
-y_test = test_data[target]
+X = data[features]
+y = data[target]
 
 # Normalize the features
 scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
+X_scaled = scaler.fit_transform(X)
 
-# Step 1: Train XGBoost model with expanded hyperparameter search space
-xgb_param_grid = {
-    'n_estimators': [100, 200, 300, 400, 500, 600, 700],
-    'max_depth': [3, 6, 9, 12, 15, 20],
-    'learning_rate': [0.001, 0.01, 0.05, 0.1, 0.2, 0.3],
-    'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
-    'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
-    'gamma': [0, 0.1, 0.2, 0.3, 0.4, 0.5],
-    'min_child_weight': [1, 3, 5, 7, 10],
-    'reg_alpha': [0, 0.1, 1, 10, 100],  # Regularization (L1)
-    'reg_lambda': [0, 0.1, 1, 10, 100]  # Regularization (L2)
-}
+# TimeSeriesSplit for cross-validation
+tscv = TimeSeriesSplit(n_splits=5)
 
-xgb_random = RandomizedSearchCV(
-    estimator=xgb.XGBRegressor(random_state=42),
-    param_distributions=xgb_param_grid,
-    n_iter=100,  # Increased number of iterations
-    cv=TimeSeriesSplit(n_splits=5),  # Use TimeSeriesSplit for cross-validation
-    verbose=2,
-    random_state=42,
-    n_jobs=-1
-)
+# Define the objective function for Optuna
+def objective(trial):
+    params = {
+        'n_estimators': trial.suggest_int('n_estimators', 50, 300),
+        'max_depth': trial.suggest_int('max_depth', 3, 9),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2),
+        'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+        'gamma': trial.suggest_float('gamma', 0, 0.2),
+        'min_child_weight': trial.suggest_int('min_child_weight', 1, 5),
+        'reg_alpha': trial.suggest_float('reg_alpha', 0, 10),
+        'reg_lambda': trial.suggest_float('reg_lambda', 0, 10),
+        'random_state': 42,
+        'eval_metric': 'rmse',  # Add evaluation metric
+        'early_stopping_rounds': 50  # Add early stopping here
+    }
 
-xgb_random.fit(X_train_scaled, y_train)
-best_xgb = xgb_random.best_estimator_
-print(f"Best XGBoost Parameters: {xgb_random.best_params_}")
+    scores = []
 
-# Step 2: Train Random Forest model with expanded hyperparameter search space
-rf_param_dist = {
-    'n_estimators': [100, 200, 300, 400, 500, 600, 700],
-    'max_depth': [10, 20, 30, 40, 50, 60, None],
-    'min_samples_split': [2, 5, 10, 15, 20],
-    'min_samples_leaf': [1, 2, 4, 6, 8],
-    'max_features': ['auto', 'sqrt', 'log2']
-}
+    for train_index, val_index in tscv.split(X_scaled):
+        X_train, X_val = X_scaled[train_index], X_scaled[val_index]
+        y_train, y_val = y.iloc[train_index], y.iloc[val_index]
 
-rf_random = RandomizedSearchCV(
-    estimator=RandomForestRegressor(random_state=42),
-    param_distributions=rf_param_dist,
-    n_iter=50,  # Increased number of iterations
-    cv=3,  # Cross-validation splits
-    verbose=2,
-    random_state=42,
-    n_jobs=-1
-)
+        # Initialize the model
+        model = xgb.XGBRegressor(**params)
 
-rf_random.fit(X_train_scaled, y_train)
-best_rf = rf_random.best_estimator_
-print(f"Best Random Forest Parameters: {rf_random.best_params_}")
+        # Fit the model with early stopping
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+            verbose=False
+        )
+        y_pred = model.predict(X_val)
+        scores.append(mean_squared_error(y_val, y_pred))
 
-# Step 3: Optimize Ensemble Weights
-def objective(weights):
-    ensemble_pred = (weights[0] * best_xgb.predict(X_test_scaled)) + (weights[1] * best_rf.predict(X_test_scaled))
-    return mean_squared_error(y_test, ensemble_pred)
+    return np.mean(scores)
 
-# Initial weights
-initial_weights = [0.6, 0.4]
+# Run Bayesian Optimization with Optuna
+study = optuna.create_study(direction='minimize', sampler=TPESampler(seed=42))
+study.optimize(objective, n_trials=50)  # Number of trials
 
-# Constraints: weights must sum to 1
-constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+# Get the best parameters
+best_params = study.best_params
+print(f"Best Parameters: {best_params}")
 
-# Bounds: weights must be between 0 and 1
-bounds = [(0, 1), (0, 1)]
+# Train the final model with the best parameters
+best_xgb = xgb.XGBRegressor(**best_params, random_state=42)
+best_xgb.fit(X_scaled, y)
 
-# Optimize weights
-result = minimize(objective, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints)
-optimized_weights = result.x
+# Analyze feature importance
+feature_importance = best_xgb.feature_importances_
+feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': feature_importance})
+feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False)
 
-print(f"Optimized Weights: XGBoost = {optimized_weights[0]:.4f}, Random Forest = {optimized_weights[1]:.4f}")
+plt.figure(figsize=(10, 6))
+plt.barh(feature_importance_df['Feature'], feature_importance_df['Importance'])
+plt.xlabel('Importance')
+plt.ylabel('Feature')
+plt.title('Feature Importance')
+plt.show()
 
-# Step 4: Ensemble Predictions with Optimized Weights
-def ensemble_predict(X, xgb_weight=optimized_weights[0], rf_weight=optimized_weights[1]):
-    xgb_pred = best_xgb.predict(X)
-    rf_pred = best_rf.predict(X)
-    return (xgb_weight * xgb_pred) + (rf_weight * rf_pred)
-
-# Evaluate the ensemble model
-ensemble_test_pred = ensemble_predict(X_test_scaled)
-mse = mean_squared_error(y_test, ensemble_test_pred)
-mae = mean_absolute_error(y_test, ensemble_test_pred)
-r2 = r2_score(y_test, ensemble_test_pred)
-
-print("Optimized Ensemble Model Evaluation:")
-print(f"Mean Squared Error: {mse:.4f}")
-print(f"Mean Absolute Error: {mae:.4f}")
-print(f"R-squared: {r2:.4f}")
-
-# Predict for the coming week
+# Step 4: Generate predictions for future data
 last_date = data['Start date/time'].max()
-future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='h')  # Use 'h' instead of 'H'
+future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='H')
 
 # Create future DataFrame
 future_data = pd.DataFrame(index=future_dates)
@@ -165,28 +133,17 @@ future_data['Month'] = future_data.index.month
 future_data['Day'] = future_data.index.day
 future_data['Hour'] = future_data.index.hour
 future_data['DayOfWeek'] = future_data.index.dayofweek
-
-# Initialize Lag_Price with the last observed price
 future_data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
 
-# Step 5: Forecast weather and grid load features for the next week
+# Forecast weather and load data using Prophet
 def forecast_feature(data, feature, periods=7*24):
-    # Prepare data for Prophet
-    feature_data = data[['Start date/time', feature]].rename(
-        columns={'Start date/time': 'ds', feature: 'y'}
-    )
-    
-    # Train Prophet model
+    feature_data = data[['Start date/time', feature]].rename(columns={'Start date/time': 'ds', feature: 'y'})
     model = Prophet()
     model.fit(feature_data)
-    
-    # Forecast for future dates
     future = model.make_future_dataframe(periods=periods, freq='H')
     forecast = model.predict(future)
-    
     return forecast['yhat'].tail(periods).values
 
-# Forecast temperature, wind speed, and grid load
 future_data['temperature_2m (°C)'] = forecast_feature(data, 'temperature_2m (°C)')
 future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)')
 future_data['Total (grid consumption) [MWh]'] = forecast_feature(data, 'Total (grid consumption) [MWh]')
@@ -195,35 +152,27 @@ future_data['Total (grid consumption) [MWh]'] = forecast_feature(data, 'Total (g
 future_data['Rolling_Temp_24h'] = future_data['temperature_2m (°C)'].rolling(window=24).mean()
 future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(window=24).mean()
 future_data['Rolling_Load_24h'] = future_data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
-
-# Fill NaN values in rolling averages (first 23 rows)
 future_data.fillna(method='bfill', inplace=True)
 
-# Iteratively predict future prices
-ensemble_future_pred = []
+# Predict future prices iteratively
+xgb_future_pred = []
 for i in range(len(future_data)):
-    # Scale the features for the current timestep
     future_data_scaled = scaler.transform(future_data.iloc[i:i+1][features])
-    
-    # Predict the price for the current timestep
-    pred = ensemble_predict(future_data_scaled)
-    ensemble_future_pred.append(pred[0])
-    
-    # Update Lag_Price for the next timestep
+    pred = best_xgb.predict(future_data_scaled)
+    xgb_future_pred.append(pred[0])
     if i < len(future_data) - 1:
         future_data.at[future_data.index[i+1], 'Lag_Price'] = pred[0]
 
-# Create a DataFrame for the predictions
+# Save predictions
 future_predictions_df = pd.DataFrame({
     'Start date/time': future_dates,
-    'Predicted Price [Euro/MWh]': ensemble_future_pred
+    'Predicted Price [Euro/MWh]': xgb_future_pred
 })
 
-# Print the predictions with dates
 print("Predictions for the coming week:")
 print(future_predictions_df)
 
-# Load actual data (if available)
+# Load actual data
 actual_data = pd.DataFrame({
     'Start date/time': [
         '2024-10-01 00:00:00', '2024-10-01 01:00:00', '2024-10-01 02:00:00', 
