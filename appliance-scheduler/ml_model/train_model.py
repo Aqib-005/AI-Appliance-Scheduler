@@ -1,14 +1,12 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import xgboost as xgb
-import matplotlib.pyplot as plt
-from prophet import Prophet
+import joblib
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_squared_error
 import optuna
 from optuna.samplers import TPESampler
-import joblib
 
 # Load the data
 data = pd.read_csv("data/merged-data.csv")
@@ -75,8 +73,8 @@ def objective(trial):
         'reg_alpha': trial.suggest_float('reg_alpha', 0, 10),
         'reg_lambda': trial.suggest_float('reg_lambda', 0, 10),
         'random_state': 42,
-        'eval_metric': 'rmse',  # Add evaluation metric
-        'early_stopping_rounds': 50  # Add early stopping here
+        'eval_metric': 'rmse',
+        'early_stopping_rounds': 50
     }
 
     scores = []
@@ -111,67 +109,8 @@ print(f"Best Parameters: {best_params}")
 best_xgb = xgb.XGBRegressor(**best_params, random_state=42)
 best_xgb.fit(X_scaled, y)
 
-# Analyze feature importance
-feature_importance = best_xgb.feature_importances_
-feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': feature_importance})
-feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False)
-
-plt.figure(figsize=(10, 6))
-plt.barh(feature_importance_df['Feature'], feature_importance_df['Importance'])
-plt.xlabel('Importance')
-plt.ylabel('Feature')
-plt.title('Feature Importance')
-plt.show()
-
-# Step 4: Generate predictions for future data
-last_date = data['Start date/time'].max()
-future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='H')
-
-# Create future DataFrame
-future_data = pd.DataFrame(index=future_dates)
-future_data['Year'] = future_data.index.year
-future_data['Month'] = future_data.index.month
-future_data['Day'] = future_data.index.day
-future_data['Hour'] = future_data.index.hour
-future_data['DayOfWeek'] = future_data.index.dayofweek
-future_data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
-
-# Forecast weather and load data using Prophet
-def forecast_feature(data, feature, periods=7*24):
-    feature_data = data[['Start date/time', feature]].rename(columns={'Start date/time': 'ds', feature: 'y'})
-    model = Prophet()
-    model.fit(feature_data)
-    future = model.make_future_dataframe(periods=periods, freq='H')
-    forecast = model.predict(future)
-    return forecast['yhat'].tail(periods).values
-
-future_data['temperature_2m (°C)'] = forecast_feature(data, 'temperature_2m (°C)')
-future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)')
-future_data['Total (grid consumption) [MWh]'] = forecast_feature(data, 'Total (grid consumption) [MWh]')
-
-# Add rolling averages for future data
-future_data['Rolling_Temp_24h'] = future_data['temperature_2m (°C)'].rolling(window=24).mean()
-future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(window=24).mean()
-future_data['Rolling_Load_24h'] = future_data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
-future_data.fillna(method='bfill', inplace=True)
-
-# Predict future prices iteratively
-xgb_future_pred = []
-for i in range(len(future_data)):
-    future_data_scaled = scaler.transform(future_data.iloc[i:i+1][features])
-    pred = best_xgb.predict(future_data_scaled)
-    xgb_future_pred.append(pred[0])
-    if i < len(future_data) - 1:
-        future_data.at[future_data.index[i+1], 'Lag_Price'] = pred[0]
-
-# Save predictions
-future_predictions_df = pd.DataFrame({
-    'Start date/time': future_dates,
-    'Predicted Price [Euro/MWh]': xgb_future_pred
-})
-
-print("Predictions for the coming week:")
-print(future_predictions_df)
-
+# Save the model and scaler
 joblib.dump(best_xgb, 'xgb_model.pkl')
 joblib.dump(scaler, 'scaler.pkl')
+
+print("Model training complete. Model and scaler saved.")
