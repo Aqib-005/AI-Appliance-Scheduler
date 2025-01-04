@@ -1,9 +1,22 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import pandas as pd
 import numpy as np
 from prophet import Prophet
 import joblib
-from pydantic import BaseModel
+from aiocache import cached
+
+app = FastAPI()
+
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Load the pre-trained model and scaler
 model = joblib.load('xgb_model.pkl')
@@ -11,7 +24,7 @@ scaler = joblib.load('scaler.pkl')
 
 # Define the input data model for the API
 class PredictionRequest(BaseModel):
-    start_date: str  # Start date for predictions (e.g., "2024-01-01")
+    start_date: str
 
 # Define the list of features used during training
 features = [
@@ -27,8 +40,12 @@ features = [
     'Lag_Price'
 ]
 
-# Initialize FastAPI app
-app = FastAPI()
+# Cache predictions for 1 hour
+@app.post("/predict")
+@cached(ttl=3600)  # Cache for 1 hour
+async def predict(request: PredictionRequest):
+    predictions = predict_future_prices(request.start_date)
+    return {"predictions": predictions}
 
 # Function to predict future prices
 def predict_future_prices(start_date):
@@ -77,7 +94,6 @@ def predict_future_prices(start_date):
     # Predict future prices iteratively
     xgb_future_pred = []
     for i in range(len(future_data)):
-        # Scale the features for the current row
         future_data_scaled = scaler.transform(future_data.iloc[i:i+1][features])
         pred = model.predict(future_data_scaled)
         xgb_future_pred.append(pred[0])
@@ -90,12 +106,6 @@ def predict_future_prices(start_date):
         'Predicted Price [Euro/MWh]': xgb_future_pred
     })
     return future_predictions_df.to_dict(orient='records')
-
-# Define the API endpoint
-@app.post("/predict")
-def predict(request: PredictionRequest):
-    predictions = predict_future_prices(request.start_date)
-    return {"predictions": predictions}
 
 # Run the API
 if __name__ == "__main__":

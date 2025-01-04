@@ -7,5 +7,5 @@ Route::get('/', function () {
     return view('welcome');
 });
 
-Route::get('/schedule', [ScheduleController::class, 'index']);
-Route::post('/schedule', [ScheduleController::class, 'store']);
+Route::get('/schedule', [ScheduleController::class, 'index'])->name('schedule.index');
+Route::post('/schedule', [ScheduleController::class, 'store'])->name('schedule.store');
