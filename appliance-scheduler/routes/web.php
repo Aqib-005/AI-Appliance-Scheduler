@@ -4,9 +4,17 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\ScheduleController;
 use Illuminate\Support\Facades\DB;
 
-Route::get('/', function () {
-    return view('welcome');
-});
+// Dashboard
+Route::get('/', [ScheduleController::class, 'dashboard'])->name('dashboard');
+
+Route::get('/appliances/manage', [ScheduleController::class, 'manageAppliances'])->name('appliances.manage');
+
+Route::post('/appliance/add', [ScheduleController::class, 'addAppliance'])->name('appliance.add');
+
+Route::get('/appliance/edit/{id}', [ScheduleController::class, 'editAppliance'])->name('appliance.edit');
+Route::put('/appliance/update/{id}', [ScheduleController::class, 'updateAppliance'])->name('appliance.update');
+
+Route::delete('/appliance/remove/{id}', [ScheduleController::class, 'removeAppliance'])->name('appliance.remove');
 
 Route::get('/test-db', function () {
     try {

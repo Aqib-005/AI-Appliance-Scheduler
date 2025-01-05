@@ -10,7 +10,17 @@ class ScheduleController extends Controller
 {
     public function index()
     {
-        return view('schedule');
+        $appliances = Appliance::all();
+        return view('schedule', ['appliances' => $appliances]);
+    }
+
+    public function dashboard()
+    {
+        // Fetch appliances and predictions
+        $appliances = Appliance::all();
+        $predictions = []; // Fetch predictions from your AI model
+
+        return view('dashboard', ['appliances' => $appliances, 'predictions' => $predictions]);
     }
 
     public function store(Request $request)
@@ -149,7 +159,6 @@ class ScheduleController extends Controller
             'preferred_start' => 'required|integer|min:0|max:23',
             'preferred_end' => 'required|integer|min:0|max:23',
             'duration' => 'required|numeric',
-            'usage_days' => 'required|array',
         ]);
 
         Appliance::create([
@@ -158,10 +167,10 @@ class ScheduleController extends Controller
             'preferred_start' => $request->input('preferred_start'),
             'preferred_end' => $request->input('preferred_end'),
             'duration' => $request->input('duration'),
-            'usage_days' => json_encode($request->input('usage_days')),
+            'usage_days' => null, // Set usage_days to null
         ]);
 
-        return redirect()->back()->with('success', 'Appliance added successfully.');
+        return redirect()->route('appliances.manage')->with('success', 'Appliance added successfully.');
     }
 
     public function removeAppliance($id)
@@ -170,6 +179,41 @@ class ScheduleController extends Controller
         $appliance->delete();
 
         return redirect()->back()->with('success', 'Appliance removed successfully.');
+    }
+
+    public function manageAppliances()
+    {
+        $appliances = Appliance::all();
+        return view('manage', ['appliances' => $appliances]);
+    }
+
+    public function editAppliance($id)
+    {
+        $appliance = Appliance::findOrFail($id);
+        return view('edit', ['appliance' => $appliance]);
+    }
+
+    public function updateAppliance(Request $request, $id)
+    {
+        $request->validate([
+            'name' => 'required|string',
+            'power' => 'required|numeric',
+            'preferred_start' => 'required|integer|min:0|max:23',
+            'preferred_end' => 'required|integer|min:0|max:23',
+            'duration' => 'required|numeric',
+        ]);
+
+        $appliance = Appliance::findOrFail($id);
+        $appliance->update([
+            'name' => $request->input('name'),
+            'power' => $request->input('power'),
+            'preferred_start' => $request->input('preferred_start'),
+            'preferred_end' => $request->input('preferred_end'),
+            'duration' => $request->input('duration'),
+            'usage_days' => null, // Set usage_days to null
+        ]);
+
+        return redirect()->route('appliances.manage')->with('success', 'Appliance updated successfully.');
     }
 
     public function getAppliances()

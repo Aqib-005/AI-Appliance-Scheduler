@@ -17,7 +17,7 @@ return new class extends Migration {
             $table->integer('preferred_start'); // Hour (0-23)
             $table->integer('preferred_end'); // Hour (0-23)
             $table->decimal('duration', 8, 2); // Hours
-            $table->json('usage_days'); // Days of the week
+            $table->json('usage_days')->nullable()->default(null);
             $table->timestamps();
         });
     }
