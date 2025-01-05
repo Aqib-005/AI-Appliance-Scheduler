@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use App\Models\Appliance;
 
 class ScheduleController extends Controller
 {
@@ -15,12 +16,8 @@ class ScheduleController extends Controller
     public function store(Request $request)
     {
         set_time_limit(300);
-
-        $request->validate([
-            'start_date' => 'required|date',
-        ]);
-
-        $response = Http::timeout(120)->post('http://127.0.0.1:8000/predict', [
+        // Call the FastAPI endpoint to get predictions
+        $response = Http::timeout(300)->post('http://127.0.0.1:8000/predict', [
             'start_date' => $request->input('start_date'),
         ]);
 
@@ -28,7 +25,155 @@ class ScheduleController extends Controller
             return back()->withErrors('Failed to fetch predictions. Please try again.');
         }
 
+        // Get the predictions
         $predictions = $response->json()['predictions'];
-        return view('results', ['predictions' => $predictions]);
+
+        // Retrieve appliances from the database
+        $appliances = Appliance::all()->map(function ($appliance) {
+            return [
+                'name' => $appliance->name,
+                'power' => $appliance->power,
+                'preferred_start' => $appliance->preferred_start,
+                'preferred_end' => $appliance->preferred_end,
+                'duration' => $appliance->duration,
+                'usage_days' => json_decode($appliance->usage_days, true),
+            ];
+        })->toArray();
+
+
+        // Schedule the appliances
+        $schedule = $this->scheduleAppliances($predictions, $appliances);
+
+        // Pass the schedule to the view
+        return view('results', ['predictions' => $predictions, 'schedule' => $schedule]);
+    }
+
+    private function scheduleAppliances($predictions, $appliances)
+    {
+        set_time_limit(300);
+
+        // Sort predictions by price (ascending)
+        usort($predictions, function ($a, $b) {
+            return $a['Predicted Price [Euro/MWh]'] <=> $b['Predicted Price [Euro/MWh]'];
+        });
+
+        // Initialize the schedule
+        $schedule = [];
+
+        // Group predictions by day
+        $predictionsByDay = [];
+        foreach ($predictions as $prediction) {
+            $day = date('l', strtotime($prediction['Start date/time'])); // Get the day name (e.g., Monday)
+            $hour = (int) date('H', strtotime($prediction['Start date/time'])); // Get the hour (0-23)
+            $predictionsByDay[$day][$hour] = $prediction; // Store predictions by day and hour
+        }
+
+        // Sort appliances by priority (higher power consumption × duration first)
+        usort($appliances, function ($a, $b) {
+            $priorityA = $a['power'] * $a['duration'];
+            $priorityB = $b['power'] * $b['duration'];
+            return $priorityB <=> $priorityA; // Sort in descending order
+        });
+
+        // Assign appliances to the cheapest hours within their preferred time slots
+        foreach ($appliances as $appliance) {
+            foreach ($appliance['usage_days'] as $day) {
+                if (!isset($predictionsByDay[$day])) {
+                    continue; // Skip if no predictions for this day
+                }
+
+                // Find all possible windows within the preferred time range
+                $windows = [];
+                for ($startHour = $appliance['preferred_start']; $startHour + $appliance['duration'] - 1 <= $appliance['preferred_end']; $startHour++) {
+                    // Calculate the total cost for this window
+                    $totalCost = 0;
+                    $conflict = false;
+
+                    for ($i = 0; $i < $appliance['duration']; $i++) {
+                        $currentHour = $startHour + $i;
+
+                        // Check if the hour is available
+                        if (isset($schedule[$day][$currentHour])) {
+                            $conflict = true;
+                            break;
+                        }
+
+                        // Add the price for this hour
+                        if (isset($predictionsByDay[$day][$currentHour])) {
+                            $totalCost += $predictionsByDay[$day][$currentHour]['Predicted Price [Euro/MWh]'];
+                        } else {
+                            $conflict = true; // Skip if any hour in the window is missing
+                            break;
+                        }
+                    }
+
+                    if (!$conflict) {
+                        $windows[] = [
+                            'startHour' => $startHour,
+                            'totalCost' => $totalCost,
+                        ];
+                    }
+                }
+
+                // Sort windows by total cost (ascending)
+                usort($windows, function ($a, $b) {
+                    return $a['totalCost'] <=> $b['totalCost'];
+                });
+
+                // Assign the appliance to the cheapest available window
+                if (!empty($windows)) {
+                    $cheapestWindow = $windows[0];
+                    $startHour = $cheapestWindow['startHour'];
+
+                    for ($i = 0; $i < $appliance['duration']; $i++) {
+                        $currentHour = $startHour + $i;
+                        $schedule[$day][$currentHour] = [
+                            'appliance' => $appliance['name'],
+                            'power' => $appliance['power'],
+                            'hour' => $currentHour,
+                            'price' => $predictionsByDay[$day][$currentHour]['Predicted Price [Euro/MWh]'],
+                        ];
+                    }
+                }
+            }
+        }
+
+        return $schedule;
+    }
+
+    public function addAppliance(Request $request)
+    {
+        $request->validate([
+            'name' => 'required|string',
+            'power' => 'required|numeric',
+            'preferred_start' => 'required|integer|min:0|max:23',
+            'preferred_end' => 'required|integer|min:0|max:23',
+            'duration' => 'required|numeric',
+            'usage_days' => 'required|array',
+        ]);
+
+        Appliance::create([
+            'name' => $request->input('name'),
+            'power' => $request->input('power'),
+            'preferred_start' => $request->input('preferred_start'),
+            'preferred_end' => $request->input('preferred_end'),
+            'duration' => $request->input('duration'),
+            'usage_days' => json_encode($request->input('usage_days')),
+        ]);
+
+        return redirect()->back()->with('success', 'Appliance added successfully.');
+    }
+
+    public function removeAppliance($id)
+    {
+        $appliance = Appliance::findOrFail($id);
+        $appliance->delete();
+
+        return redirect()->back()->with('success', 'Appliance removed successfully.');
+    }
+
+    public function getAppliances()
+    {
+        return Appliance::all();
     }
 }
