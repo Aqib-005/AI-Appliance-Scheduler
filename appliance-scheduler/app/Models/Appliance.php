@@ -22,4 +22,9 @@ class Appliance extends Model
         'duration',
         'usage_days', // Add this
     ];
+
+    public function schedules()
+    {
+        return $this->hasMany(Schedule::class);
+    }
 }

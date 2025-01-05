@@ -5,27 +5,91 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use App\Models\Appliance;
+use App\Models\Schedule;
 
 class ScheduleController extends Controller
 {
-    public function index()
+    // Display the dashboard
+    public function dashboard()
+    {
+        // Fetch appliances, schedules, and predictions
+        $appliances = Appliance::all();
+        $schedules = Schedule::with('appliance')->get();
+        $predictions = []; // Fetch predictions from your AI model
+
+        return view('dashboard', [
+            'appliances' => $appliances,
+            'schedules' => $schedules,
+            'predictions' => $predictions,
+        ]);
+    }
+
+    // Display the schedule creation page
+    public function createSchedule()
     {
         $appliances = Appliance::all();
         return view('schedule', ['appliances' => $appliances]);
     }
 
-    public function dashboard()
+    // Save the schedule
+    public function storeSchedule(Request $request)
     {
-        // Fetch appliances and predictions
-        $appliances = Appliance::all();
-        $predictions = []; // Fetch predictions from your AI model
+        // Validate the input for all days
+        $request->validate([
+            // Monday
+            'appliance_monday' => 'required|exists:appliances,id',
+            'start_hour_monday' => 'required|integer|min:0|max:23',
+            'end_hour_monday' => 'required|integer|min:0|max:23',
 
-        return view('dashboard', ['appliances' => $appliances, 'predictions' => $predictions]);
+            // Tuesday
+            'appliance_tuesday' => 'required|exists:appliances,id',
+            'start_hour_tuesday' => 'required|integer|min:0|max:23',
+            'end_hour_tuesday' => 'required|integer|min:0|max:23',
+
+            // Wednesday
+            'appliance_wednesday' => 'required|exists:appliances,id',
+            'start_hour_wednesday' => 'required|integer|min:0|max:23',
+            'end_hour_wednesday' => 'required|integer|min:0|max:23',
+
+            // Thursday
+            'appliance_thursday' => 'required|exists:appliances,id',
+            'start_hour_thursday' => 'required|integer|min:0|max:23',
+            'end_hour_thursday' => 'required|integer|min:0|max:23',
+
+            // Friday
+            'appliance_friday' => 'required|exists:appliances,id',
+            'start_hour_friday' => 'required|integer|min:0|max:23',
+            'end_hour_friday' => 'required|integer|min:0|max:23',
+
+            // Saturday
+            'appliance_saturday' => 'required|exists:appliances,id',
+            'start_hour_saturday' => 'required|integer|min:0|max:23',
+            'end_hour_saturday' => 'required|integer|min:0|max:23',
+
+            // Sunday
+            'appliance_sunday' => 'required|exists:appliances,id',
+            'start_hour_sunday' => 'required|integer|min:0|max:23',
+            'end_hour_sunday' => 'required|integer|min:0|max:23',
+        ]);
+
+        // Save the schedule (store it in the `schedules` table)
+        foreach (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as $day) {
+            Schedule::create([
+                'day' => ucfirst($day),
+                'appliance_id' => $request->input('appliance_' . $day),
+                'start_hour' => $request->input('start_hour_' . $day),
+                'end_hour' => $request->input('end_hour_' . $day),
+            ]);
+        }
+
+        return redirect()->route('dashboard')->with('success', 'Schedule saved successfully.');
     }
 
+    // Fetch predictions and generate the schedule
     public function store(Request $request)
     {
         set_time_limit(300);
+
         // Call the FastAPI endpoint to get predictions
         $response = Http::timeout(300)->post('http://127.0.0.1:8000/predict', [
             'start_date' => $request->input('start_date'),
@@ -50,7 +114,6 @@ class ScheduleController extends Controller
             ];
         })->toArray();
 
-
         // Schedule the appliances
         $schedule = $this->scheduleAppliances($predictions, $appliances);
 
@@ -58,6 +121,7 @@ class ScheduleController extends Controller
         return view('results', ['predictions' => $predictions, 'schedule' => $schedule]);
     }
 
+    // Schedule appliances based on predictions
     private function scheduleAppliances($predictions, $appliances)
     {
         set_time_limit(300);
@@ -151,6 +215,7 @@ class ScheduleController extends Controller
         return $schedule;
     }
 
+    // Add a new appliance
     public function addAppliance(Request $request)
     {
         $request->validate([
@@ -173,6 +238,7 @@ class ScheduleController extends Controller
         return redirect()->route('appliances.manage')->with('success', 'Appliance added successfully.');
     }
 
+    // Remove an appliance
     public function removeAppliance($id)
     {
         $appliance = Appliance::findOrFail($id);
@@ -181,18 +247,21 @@ class ScheduleController extends Controller
         return redirect()->back()->with('success', 'Appliance removed successfully.');
     }
 
+    // Manage appliances (view all)
     public function manageAppliances()
     {
         $appliances = Appliance::all();
         return view('manage', ['appliances' => $appliances]);
     }
 
+    // Edit an appliance
     public function editAppliance($id)
     {
         $appliance = Appliance::findOrFail($id);
         return view('edit', ['appliance' => $appliance]);
     }
 
+    // Update an appliance
     public function updateAppliance(Request $request, $id)
     {
         $request->validate([
@@ -216,6 +285,7 @@ class ScheduleController extends Controller
         return redirect()->route('appliances.manage')->with('success', 'Appliance updated successfully.');
     }
 
+    // Get all appliances (API endpoint)
     public function getAppliances()
     {
         return Appliance::all();

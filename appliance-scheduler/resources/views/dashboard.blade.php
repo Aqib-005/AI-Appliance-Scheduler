@@ -39,30 +39,51 @@
         th {
             background-color: #f2f2f2;
         }
+
+        .button-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+            cursor: pointer;
+        }
     </style>
 </head>
 
 <body>
     <h1>Dashboard</h1>
+
     <div class="container">
         <!-- Left Side: Timetable -->
         <div class="left">
-            <h2>Scheduled Appliances</h2>
+            <div class="button-container">
+                <h2>Scheduled Appliances</h2>
+                <a href="{{ route('schedule.create') }}">
+                    <button>Schedule</button>
+                </a>
+            </div>
             <table>
                 <thead>
                     <tr>
                         <th>Day</th>
-                        <th>Hour</th>
                         <th>Appliance</th>
-                        <th>Power (kW)</th>
-                        <th>Price (€/MWh)</th>
+                        <th>Start Hour</th>
+                        <th>End Hour</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <!-- Blank for now -->
-                    <tr>
-                        <td colspan="5">No appliances scheduled yet.</td>
-                    </tr>
+                    @foreach ($schedules as $schedule)
+                        <tr>
+                            <td>{{ $schedule->day }}</td>
+                            <td>{{ $schedule->appliance->name }}</td>
+                            <td>{{ $schedule->start_hour }}:00</td>
+                            <td>{{ $schedule->end_hour }}:00</td>
+                        </tr>
+                    @endforeach
                 </tbody>
             </table>
         </div>

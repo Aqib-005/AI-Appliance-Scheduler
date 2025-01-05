@@ -3,56 +3,78 @@
 
 <head>
     <title>Schedule Appliances</title>
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        .button-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+            cursor: pointer;
+        }
+    </style>
 </head>
 
 <body>
     <h1>Schedule Appliances</h1>
+    <a href="{{ route('dashboard') }}">
+        <button>Back to Dashboard</button>
+    </a>
+
     <form action="{{ route('schedule.store') }}" method="POST">
         @csrf
-        <label for="start_date">Start Date:</label>
-        <input type="date" id="start_date" name="start_date" required>
-        <button type="submit">Get Predictions</button>
+        <table>
+            <thead>
+                <tr>
+                    <th>Day</th>
+                    <th>Appliance</th>
+                    <th>Start Hour</th>
+                    <th>End Hour</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
+                    <tr>
+                        <td>{{ $day }}</td>
+                        <td>
+                            <select name="appliance_{{ strtolower($day) }}" required>
+                                <option value="">Select Appliance</option>
+                                @foreach ($appliances as $appliance)
+                                    <option value="{{ $appliance->id }}">{{ $appliance->name }}</option>
+                                @endforeach
+                            </select>
+                        </td>
+                        <td>
+                            <input type="number" name="start_hour_{{ strtolower($day) }}" min="0" max="23" required>
+                        </td>
+                        <td>
+                            <input type="number" name="end_hour_{{ strtolower($day) }}" min="0" max="23" required>
+                        </td>
+                    </tr>
+                @endforeach
+            </tbody>
+        </table>
+        <button type="submit">Save Schedule</button>
     </form>
-
-    <h2>Manage Appliances</h2>
-    <form action="{{ route('appliance.add') }}" method="POST">
-        @csrf
-        <label for="name">Appliance Name:</label>
-        <input type="text" id="name" name="name" required>
-        <br>
-        <label for="power">Power (kW):</label>
-        <input type="number" step="0.1" id="power" name="power" required>
-        <br>
-        <label for="preferred_start">Preferred Start Hour (0-23):</label>
-        <input type="number" id="preferred_start" name="preferred_start" min="0" max="23" required>
-        <br>
-        <label for="preferred_end">Preferred End Hour (0-23):</label>
-        <input type="number" id="preferred_end" name="preferred_end" min="0" max="23" required>
-        <br>
-        <label for="duration">Duration (hours):</label>
-        <input type="number" step="0.1" id="duration" name="duration" required>
-        <br>
-        <label>Usage Days:</label>
-        @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
-            <input type="checkbox" name="usage_days[]" value="{{ $day }}"> {{ $day }}
-        @endforeach
-        <br>
-        <button type="submit">Add Appliance</button>
-    </form>
-
-    <h3>Existing Appliances</h3>
-    <ul>
-        @foreach ($appliances as $appliance)
-            <li>
-                {{ $appliance->name }} ({{ $appliance->power }} kW)
-                <form action="{{ route('appliance.remove', $appliance->id) }}" method="POST" style="display:inline;">
-                    @csrf
-                    @method('DELETE')
-                    <button type="submit">Remove</button>
-                </form>
-            </li>
-        @endforeach
-    </ul>
 </body>
 
 </html>
