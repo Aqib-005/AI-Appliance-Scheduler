@@ -9,11 +9,14 @@
             width: 100%;
             border-collapse: collapse;
         }
-        th, td {
+
+        th,
+        td {
             border: 1px solid #ddd;
             padding: 8px;
             text-align: left;
         }
+
         th {
             background-color: #f2f2f2;
         }
@@ -30,6 +33,7 @@
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
             z-index: 1000;
         }
+
         .overlay {
             display: none;
             position: fixed;
@@ -40,7 +44,9 @@
             background: rgba(0, 0, 0, 0.5);
             z-index: 999;
         }
-        .popup.active, .overlay.active {
+
+        .popup.active,
+        .overlay.active {
             display: block;
         }
 
@@ -51,6 +57,7 @@
             align-items: center;
             margin-bottom: 20px;
         }
+
         button {
             padding: 10px 20px;
             cursor: pointer;

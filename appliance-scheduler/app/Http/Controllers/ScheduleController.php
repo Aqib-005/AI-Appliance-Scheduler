@@ -12,77 +12,16 @@ class ScheduleController extends Controller
     // Display the dashboard
     public function dashboard()
     {
-        // Fetch appliances, schedules, and predictions
+        // Fetch appliances and schedules
         $appliances = Appliance::all();
         $schedules = Schedule::with('appliance')->get();
-        $predictions = []; // Fetch predictions from your AI model
+        $predictions = []; // Fetch predictions from your AI model (if needed)
 
         return view('dashboard', [
             'appliances' => $appliances,
             'schedules' => $schedules,
             'predictions' => $predictions,
         ]);
-    }
-
-    // Display the schedule creation page
-    public function createSchedule()
-    {
-        $appliances = Appliance::all();
-        return view('schedule', ['appliances' => $appliances]);
-    }
-
-    // Save the schedule
-    public function storeSchedule(Request $request)
-    {
-        // Validate the input for all days
-        $request->validate([
-            // Monday
-            'appliance_monday' => 'required|exists:appliances,id',
-            'start_hour_monday' => 'required|integer|min:0|max:23',
-            'end_hour_monday' => 'required|integer|min:0|max:23',
-
-            // Tuesday
-            'appliance_tuesday' => 'required|exists:appliances,id',
-            'start_hour_tuesday' => 'required|integer|min:0|max:23',
-            'end_hour_tuesday' => 'required|integer|min:0|max:23',
-
-            // Wednesday
-            'appliance_wednesday' => 'required|exists:appliances,id',
-            'start_hour_wednesday' => 'required|integer|min:0|max:23',
-            'end_hour_wednesday' => 'required|integer|min:0|max:23',
-
-            // Thursday
-            'appliance_thursday' => 'required|exists:appliances,id',
-            'start_hour_thursday' => 'required|integer|min:0|max:23',
-            'end_hour_thursday' => 'required|integer|min:0|max:23',
-
-            // Friday
-            'appliance_friday' => 'required|exists:appliances,id',
-            'start_hour_friday' => 'required|integer|min:0|max:23',
-            'end_hour_friday' => 'required|integer|min:0|max:23',
-
-            // Saturday
-            'appliance_saturday' => 'required|exists:appliances,id',
-            'start_hour_saturday' => 'required|integer|min:0|max:23',
-            'end_hour_saturday' => 'required|integer|min:0|max:23',
-
-            // Sunday
-            'appliance_sunday' => 'required|exists:appliances,id',
-            'start_hour_sunday' => 'required|integer|min:0|max:23',
-            'end_hour_sunday' => 'required|integer|min:0|max:23',
-        ]);
-
-        // Save the schedule (store it in the `schedules` table)
-        foreach (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as $day) {
-            Schedule::create([
-                'day' => ucfirst($day),
-                'appliance_id' => $request->input('appliance_' . $day),
-                'start_hour' => $request->input('start_hour_' . $day),
-                'end_hour' => $request->input('end_hour_' . $day),
-            ]);
-        }
-
-        return redirect()->route('dashboard')->with('success', 'Schedule saved successfully.');
     }
 
     // Fetch predictions and generate the schedule
@@ -285,9 +224,9 @@ class ScheduleController extends Controller
         return redirect()->route('appliances.manage')->with('success', 'Appliance updated successfully.');
     }
 
-    // Get all appliances (API endpoint)
-    public function getAppliances()
+    public function createSchedule()
     {
-        return Appliance::all();
+        $appliances = Appliance::all();
+        return view('schedule', ['appliances' => $appliances]);
     }
 }

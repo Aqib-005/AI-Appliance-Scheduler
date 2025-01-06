@@ -7,6 +7,8 @@ use Illuminate\Support\Facades\DB;
 // Dashboard
 Route::get('/', [ScheduleController::class, 'dashboard'])->name('dashboard');
 
+
+Route::post('/schedule', [ScheduleController::class, 'store'])->name('schedule.store');
 // Schedule Page
 Route::get('/schedule/create', [ScheduleController::class, 'createSchedule'])->name('schedule.create');
 Route::post('/schedule/store', [ScheduleController::class, 'storeSchedule'])->name('schedule.store');
