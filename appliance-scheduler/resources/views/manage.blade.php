@@ -196,7 +196,7 @@
             document.getElementById('edit_duration').value = appliance.duration;
 
             // Set the form action
-            document.getElementById('editForm').action = `/appliance/update/${applianceId}`;
+            document.getElementById('editForm').action = `/appliance/edit/${applianceId}`;
 
             // Show the popup
             document.getElementById('editPopup').classList.add('active');

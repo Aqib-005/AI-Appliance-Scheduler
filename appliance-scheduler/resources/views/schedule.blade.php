@@ -7,26 +7,34 @@
         /* General Styles */
         body {
             font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
         }
 
-        .days-container {
+        .container {
+            display: flex;
+            gap: 20px;
+        }
+
+        .appliance-list {
+            flex: 1;
+        }
+
+        .weekly-grid {
+            flex: 3;
             display: flex;
             gap: 10px;
-            margin-bottom: 20px;
         }
 
-        .day {
-            padding: 10px;
+        .day-column {
+            flex: 1;
             border: 1px solid #ccc;
+            padding: 10px;
             cursor: pointer;
         }
 
-        .day.active {
+        .day-column.active {
             background-color: #f0f0f0;
-        }
-
-        .appliances-list {
-            margin-bottom: 20px;
         }
 
         .appliance-item {
@@ -65,6 +73,12 @@
         .overlay.active {
             display: block;
         }
+
+        .schedule-button {
+            margin-top: 20px;
+            padding: 10px 20px;
+            cursor: pointer;
+        }
     </style>
 </head>
 
@@ -74,48 +88,58 @@
         <button>Back to Dashboard</button>
     </a>
 
-    <!-- Days Navigation -->
-    <div class="days-container">
-        @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
-            <div class="day" onclick="selectDay('{{ strtolower($day) }}')">{{ $day }}</div>
-        @endforeach
-    </div>
-
-    <!-- Appliances List for Selected Day -->
-    <div class="appliances-list">
-        <h2 id="selected-day-header">Select a Day</h2>
-        <div id="appliances-container">
-            <!-- Appliances will be dynamically added here -->
+    <div class="container">
+        <!-- Appliance List -->
+        <div class="appliance-list">
+            <h2>Appliances</h2>
+            <ul>
+                @foreach ($appliances as $appliance)
+                    <li>
+                        <button
+                            onclick="openSchedulePopup('{{ $appliance->id }}', '{{ $appliance->name }}', '{{ $appliance->preferred_start }}', '{{ $appliance->preferred_end }}', {{ $appliance->duration }})">
+                            {{ $appliance->name }}
+                        </button>
+                    </li>
+                @endforeach
+            </ul>
         </div>
-        <button onclick="openAddAppliancePopup()">Add Appliance</button>
+
+        <!-- Weekly Grid Table -->
+        <div class="weekly-grid">
+            @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
+                <div class="day-column" onclick="selectDay('{{ strtolower($day) }}')">
+                    <h3>{{ $day }}</h3>
+                    <div id="appliances-{{ strtolower($day) }}" class="appliances-container">
+                        <!-- Appliances will be dynamically added here -->
+                    </div>
+                </div>
+            @endforeach
+        </div>
     </div>
 
     <!-- Schedule Button -->
-    <button onclick="runSchedulingAlgorithm()">Schedule</button>
+    <button class="schedule-button" onclick="runSchedulingAlgorithm()">Schedule</button>
 
-    <!-- Add Appliance Popup -->
-    <div id="addAppliancePopup" class="popup">
-        <h2>Add Appliance</h2>
-        <form id="addApplianceForm">
-            <label for="appliance">Appliance:</label>
-            <select id="appliance" name="appliance" required>
-                <option value="">Select Appliance</option>
-                @foreach ($appliances as $appliance)
-                    <option value="{{ $appliance->id }}">{{ $appliance->name }}</option>
-                @endforeach
-            </select>
+    <!-- Schedule Popup -->
+    <!-- Schedule Popup -->
+    <div id="schedulePopup" class="popup">
+        <h2>Schedule Appliance for <span id="selectedDayName"></span></h2>
+        <form id="scheduleForm">
+            <input type="hidden" id="applianceId" name="applianceId">
+            <label for="applianceName">Appliance:</label>
+            <input type="text" id="applianceName" name="applianceName" readonly>
             <br>
-            <label for="start_hour">Start Hour (0-23):</label>
-            <input type="number" id="start_hour" name="start_hour" min="0" max="23" required>
+            <label for="preferredStart">Preferred Start Time:</label>
+            <input type="time" id="preferredStart" name="preferredStart" required>
             <br>
-            <label for="end_hour">End Hour (0-23):</label>
-            <input type="number" id="end_hour" name="end_hour" min="0" max="23" required>
+            <label for="preferredEnd">Preferred End Time:</label>
+            <input type="time" id="preferredEnd" name="preferredEnd" required>
             <br>
-            <label for="duration">Duration (hours):</label>
-            <input type="number" id="duration" name="duration" step="0.1" required>
+            <label for="duration">Duration (HH:mm):</label>
+            <input type="text" id="duration" name="duration" placeholder="HH:mm" required>
             <br>
-            <button type="button" onclick="addAppliance()">Add</button>
-            <button type="button" onclick="closeAddAppliancePopup()">Cancel</button>
+            <button type="button" onclick="addApplianceToDay()">Add</button>
+            <button type="button" onclick="closeSchedulePopup()">Cancel</button>
         </form>
     </div>
 
@@ -124,126 +148,227 @@
 
     <script>
         let selectedDay = null;
-        const appliancesContainer = document.getElementById('appliances-container');
-        const selectedDayHeader = document.getElementById('selected-day-header');
+        let selectedApplianceId = null;
+        let selectedApplianceName = null;
+        let selectedApplianceStart = null;
+        let selectedApplianceEnd = null;
+        let selectedApplianceDuration = null;
+
+        // Open the schedule popup
+        function openSchedulePopup(applianceId, applianceName, preferredStart, preferredEnd, duration) {
+            console.log('Appliance ID:', applianceId);
+            console.log('Appliance Name:', applianceName);
+            console.log('Preferred Start:', preferredStart);
+            console.log('Preferred End:', preferredEnd);
+            console.log('Duration:', duration);
+
+            selectedApplianceId = applianceId; // Set the selected appliance ID
+
+            // Fetch the latest appliance data from the database
+            fetch(`/appliance/get/${applianceId}`)
+                .then(response => response.json())
+                .then(data => {
+                    // Populate the popup form with the latest data
+                    document.getElementById('applianceId').value = data.id;
+                    document.getElementById('applianceName').value = data.name;
+                    document.getElementById('preferredStart').value = data.preferred_start;
+                    document.getElementById('preferredEnd').value = data.preferred_end;
+                    document.getElementById('duration').value = data.duration; // Ensure this matches the format
+                    document.getElementById('selectedDayName').textContent = selectedDay ? selectedDay.charAt(0).toUpperCase() + selectedDay.slice(1) : '';
+
+                    // Show the popup
+                    document.getElementById('schedulePopup').classList.add('active');
+                    document.getElementById('overlay').classList.add('active');
+                })
+                .catch(error => {
+                    console.error('Error fetching appliance data:', error);
+                    alert('Failed to fetch appliance data. Please try again.');
+                });
+        }
+
+        // Close the schedule popup
+        function closeSchedulePopup() {
+            document.getElementById('schedulePopup').classList.remove('active');
+            document.getElementById('overlay').classList.remove('active');
+        }
 
         // Select a day
         function selectDay(day) {
             selectedDay = day;
-            selectedDayHeader.textContent = `Appliances for ${day.charAt(0).toUpperCase() + day.slice(1)}`;
-            loadAppliancesForDay(day);
         }
 
-        // Load appliances for the selected day
-        function loadAppliancesForDay(day) {
-            // Fetch appliances for the selected day (you can use AJAX)
-            appliancesContainer.innerHTML = ''; // Clear the container
-            // Example: Add dummy data
-            const appliances = [
-                { id: 1, name: 'Washing Machine', start_hour: 7, end_hour: 9, duration: 2 },
-                { id: 2, name: 'Dishwasher', start_hour: 18, end_hour: 20, duration: 2 },
-            ];
-            appliances.forEach(appliance => {
-                const applianceItem = document.createElement('div');
-                applianceItem.className = 'appliance-item';
-                applianceItem.innerHTML = `
-                    <span>${appliance.name} (${appliance.start_hour}:00 - ${appliance.end_hour}:00, ${appliance.duration} hrs)</span>
-                    <button onclick="editAppliance(${appliance.id})">Edit</button>
-                `;
-                appliancesContainer.appendChild(applianceItem);
-            });
+        // Validate duration format (HH:mm)
+        function isValidDuration(duration) {
+            const regex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/; // Matches HH:mm format
+            return regex.test(duration);
         }
 
-        // Open the add appliance popup
-        function openAddAppliancePopup() {
-            if (!selectedDay) {
-                alert('Please select a day first.');
+        // Validate that the duration doesn't exceed the time range
+        function isDurationValid(startTime, endTime, duration) {
+            // Convert HH:mm to minutes
+            const start = startTime.split(':');
+            const end = endTime.split(':');
+            const startMinutes = parseInt(start[0]) * 60 + parseInt(start[1]);
+            const endMinutes = parseInt(end[0]) * 60 + parseInt(end[1]);
+
+            // Calculate the total time range in minutes
+            const timeRangeMinutes = endMinutes - startMinutes;
+
+            // Convert duration (HH:mm) to minutes
+            const durationParts = duration.split(':');
+            const durationMinutes = parseInt(durationParts[0]) * 60 + parseInt(durationParts[1]);
+
+            // Check if duration exceeds the time range
+            return durationMinutes <= timeRangeMinutes;
+        }
+
+        // Add an appliance to the selected day
+        function addApplianceToDay() {
+            console.log('Selected Appliance ID:', selectedApplianceId); // Debugging
+            console.log('Selected Day:', selectedDay); // Debugging
+
+            if (!selectedApplianceId) {
+                alert('No appliance selected. Please try again.');
                 return;
             }
-            document.getElementById('addAppliancePopup').classList.add('active');
-            document.getElementById('overlay').classList.add('active');
-        }
 
-        // Close the add appliance popup
-        function closeAddAppliancePopup() {
-            document.getElementById('addAppliancePopup').classList.remove('active');
-            document.getElementById('overlay').classList.remove('active');
-        }
-
-        // Add an appliance
-        function addAppliance() {
-            const applianceId = document.getElementById('appliance').value;
-            const startHour = document.getElementById('start_hour').value;
-            const endHour = document.getElementById('end_hour').value;
+            const preferredStart = document.getElementById('preferredStart').value;
+            const preferredEnd = document.getElementById('preferredEnd').value;
             const duration = document.getElementById('duration').value;
 
-            // Validate input
-            if (!applianceId || !startHour || !endHour || !duration) {
-                alert('Please fill in all fields.');
+            // Validate inputs
+            if (!selectedDay || !preferredStart || !preferredEnd || !duration) {
+                alert('Please fill in all fields and select a day.');
                 return;
             }
 
-            // Save the appliance (you can use AJAX to save to the database)
-            const appliance = {
-                id: applianceId,
-                name: document.getElementById('appliance').selectedOptions[0].text,
-                start_hour: startHour,
-                end_hour: endHour,
-                duration: duration,
-            };
+            // Validate time format
+            if (!isValidTime(preferredStart) || !isValidTime(preferredEnd)) {
+                alert('Please enter valid times in HH:mm format.');
+                return;
+            }
 
-            // Add the appliance to the list
-            const applianceItem = document.createElement('div');
-            applianceItem.className = 'appliance-item';
-            applianceItem.innerHTML = `
-                <span>${appliance.name} (${appliance.start_hour}:00 - ${appliance.end_hour}:00, ${appliance.duration} hrs)</span>
-                <button onclick="editAppliance(${appliance.id})">Edit</button>
-            `;
-            appliancesContainer.appendChild(applianceItem);
+            // Validate duration format
+            if (!isValidDuration(duration)) {
+                alert('Invalid duration format. Please use HH:mm (e.g., 4:55).');
+                return;
+            }
 
-            // Close the popup
-            closeAddAppliancePopup();
-        }
+            // Validate that the duration doesn't exceed the time range
+            if (!isDurationValid(preferredStart, preferredEnd, duration)) {
+                alert('Duration exceeds the preferred time range. Please adjust the duration.');
+                return;
+            }
 
-        // Edit an appliance
-        function editAppliance(applianceId) {
-            // Fetch appliance details (you can use AJAX)
-            const appliance = {
-                id: applianceId,
-                name: 'Washing Machine',
-                start_hour: 7,
-                end_hour: 9,
-                duration: 2,
-            };
 
-            // Populate the popup form
-            document.getElementById('appliance').value = appliance.id;
-            document.getElementById('start_hour').value = appliance.start_hour;
-            document.getElementById('end_hour').value = appliance.end_hour;
-            document.getElementById('duration').value = appliance.duration;
+            // Update the appliance in the database (using AJAX)
+            fetch(`/appliance/update/${selectedApplianceId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                },
+                body: JSON.stringify({
+                    preferred_start: preferredStart,
+                    preferred_end: preferredEnd,
+                    duration: duration, // Send duration as a decimal
+                }),
+            })
+                .then(response => response.json())
+                .then(data => {
+                    console.log('API Response:', data); // Debugging
+                    if (data.success) {
+                        // Create the appliance item
+                        const applianceItem = document.createElement('div');
+                        applianceItem.className = 'appliance-item';
+                        applianceItem.innerHTML = `
+                    <span>${document.getElementById('applianceName').value} (${preferredStart} - ${preferredEnd}, ${duration} hrs)</span>
+                `;
 
-            // Open the popup
-            openAddAppliancePopup();
+                        // Add the appliance to the selected day's container
+                        document.getElementById(`appliances-${selectedDay}`).appendChild(applianceItem);
+
+                        // Close the popup
+                        closeSchedulePopup();
+                    } else {
+                        alert('Failed to update appliance. Please try again.');
+                    }
+                })
+                .catch(error => {
+                    console.error('API Error:', error); // Debugging
+                    alert('Failed to update appliance. Please try again.');
+                });
         }
 
         // Run the scheduling algorithm
-        function runSchedulingAlgorithm() {
-            // Collect all scheduled appliances
-            const scheduledAppliances = [];
-            document.querySelectorAll('.appliance-item').forEach(item => {
-                const text = item.textContent.trim();
-                const [name, time] = text.split(' (');
-                const [startHour, endHour, duration] = time.replace(')', '').split(/[: -]/);
-                scheduledAppliances.push({
-                    name: name,
-                    start_hour: parseInt(startHour),
-                    end_hour: parseInt(endHour),
-                    duration: parseFloat(duration),
-                });
-            });
+        function addApplianceToDay() {
+            console.log('Selected Appliance ID:', selectedApplianceId); // Debugging
+            console.log('Selected Day:', selectedDay); // Debugging
 
-            // Call the scheduling algorithm (you can use AJAX)
-            alert('Scheduling algorithm will run with the following appliances: ' + JSON.stringify(scheduledAppliances));
+            if (!selectedApplianceId) {
+                alert('No appliance selected. Please try again.');
+                return;
+            }
+
+            const preferredStart = document.getElementById('preferredStart').value;
+            const preferredEnd = document.getElementById('preferredEnd').value;
+            const duration = parseFloat(document.getElementById('duration').value);
+
+            // Validate inputs
+            if (!selectedDay || !preferredStart || !preferredEnd || isNaN(duration)) {
+                alert('Please fill in all fields and select a day.');
+                return;
+            }
+
+            // Validate that the duration is a positive number
+            if (duration <= 0) {
+                alert('Duration must be a positive number.');
+                return;
+            }
+
+            // Validate that the duration doesn't exceed the time range
+            if (!isDurationValid(preferredStart, preferredEnd, duration)) {
+                alert('Duration exceeds the preferred time range. Please adjust the duration.');
+                return;
+            }
+
+            // Update the appliance in the database (using AJAX)
+            fetch(`/appliance/update/${selectedApplianceId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                },
+                body: JSON.stringify({
+                    preferred_start: preferredStart,
+                    preferred_end: preferredEnd,
+                    duration: duration, // Send duration in hours
+                }),
+            })
+                .then(response => response.json())
+                .then(data => {
+                    console.log('API Response:', data); // Debugging
+                    if (data.success) {
+                        // Create the appliance item
+                        const applianceItem = document.createElement('div');
+                        applianceItem.className = 'appliance-item';
+                        applianceItem.innerHTML = `
+                <span>${document.getElementById('applianceName').value} (${preferredStart} - ${preferredEnd}, ${duration} hrs)</span>
+            `;
+
+                        // Add the appliance to the selected day's container
+                        document.getElementById(`appliances-${selectedDay}`).appendChild(applianceItem);
+
+                        // Close the popup
+                        closeSchedulePopup();
+                    } else {
+                        alert('Failed to update appliance. Please try again.');
+                    }
+                })
+                .catch(error => {
+                    console.error('API Error:', error); // Debugging
+                    alert('Failed to update appliance. Please try again.');
+                });
         }
     </script>
 </body>

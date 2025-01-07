@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use App\Models\Appliance;
 use App\Models\Schedule;
+use Storage\Logs;
 
 class ScheduleController extends Controller
 {
@@ -154,6 +155,18 @@ class ScheduleController extends Controller
         return $schedule;
     }
 
+    public function getAppliance($id)
+    {
+        $appliance = Appliance::findOrFail($id);
+        return response()->json([
+            'id' => $appliance->id,
+            'name' => $appliance->name,
+            'preferred_start' => $appliance->preferred_start,
+            'preferred_end' => $appliance->preferred_end,
+            'duration' => $appliance->duration,
+        ]);
+    }
+
     // Add a new appliance
     public function addAppliance(Request $request)
     {
@@ -194,14 +207,7 @@ class ScheduleController extends Controller
     }
 
     // Edit an appliance
-    public function editAppliance($id)
-    {
-        $appliance = Appliance::findOrFail($id);
-        return view('edit', ['appliance' => $appliance]);
-    }
-
-    // Update an appliance
-    public function updateAppliance(Request $request, $id)
+    public function editAppliance(Request $request, $id)
     {
         $request->validate([
             'name' => 'required|string',
@@ -222,6 +228,32 @@ class ScheduleController extends Controller
         ]);
 
         return redirect()->route('appliances.manage')->with('success', 'Appliance updated successfully.');
+    }
+
+    // Update an appliance
+    public function updateAppliance(Request $request, $id)
+    {
+        \Logs::info('Updating appliance:', [
+            'id' => $id,
+            'preferred_start' => $request->input('preferred_start'),
+            'preferred_end' => $request->input('preferred_end'),
+            'duration' => $request->input('duration'),
+        ]);
+
+        $request->validate([
+            'preferred_start' => 'required|date_format:H:i', // Validate time format (HH:mm)
+            'preferred_end' => 'required|date_format:H:i',   // Validate time format (HH:mm)
+            'duration' => 'required|numeric',                // Validate duration as a decimal
+        ]);
+
+        $appliance = Appliance::findOrFail($id);
+        $appliance->update([
+            'preferred_start' => $request->input('preferred_start'),
+            'preferred_end' => $request->input('preferred_end'),
+            'duration' => $request->input('duration'),
+        ]);
+
+        return response()->json(['success' => true]);
     }
 
     public function createSchedule()
