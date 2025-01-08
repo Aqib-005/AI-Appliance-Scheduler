@@ -224,8 +224,6 @@
 
         // Add an appliance to the selected day
         function addApplianceToDay() {
-            console.log('Selected Appliance ID:', selectedApplianceId); // Debugging
-            console.log('Selected Day:', selectedDay); // Debugging
 
             if (!selectedApplianceId) {
                 alert('No appliance selected. Please try again.');
