@@ -318,7 +318,7 @@
                     'X-CSRF-TOKEN': '{{ csrf_token() }}',
                 },
                 body: JSON.stringify({
-                    appliance_id: selectedApplianceId,
+                    appliance_id: selectedApplianceId, // Ensure appliance_id is set
                     name: document.getElementById('applianceName').value,
                     preferred_start: preferredStart,
                     preferred_end: preferredEnd,

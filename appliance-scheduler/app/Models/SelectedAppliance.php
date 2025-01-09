@@ -10,13 +10,23 @@ class SelectedAppliance extends Model
     use HasFactory;
 
     protected $fillable = [
+        'appliance_id',
         'name',
         'preferred_start',
         'preferred_end',
+        'duration',
         'usage_days',
+        'predicted_start_time',
+        'predicted_end_time',
     ];
 
     protected $casts = [
         'usage_days' => 'array',
     ];
+
+    // Define the relationship with the Appliance model
+    public function appliance()
+    {
+        return $this->belongsTo(Appliance::class, 'appliance_id');
+    }
 }

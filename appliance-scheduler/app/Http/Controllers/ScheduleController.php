@@ -13,9 +13,19 @@ class ScheduleController extends Controller
     // Display the dashboard
     public function dashboard()
     {
-        // Fetch appliances and schedules
+        // Fetch appliances and selected appliances with the appliance relationship
         $appliances = Appliance::all();
-        $schedules = Schedule::with('appliance')->get();
+        $selectedAppliances = SelectedAppliance::with('appliance')->get();
+
+        // Debugging: Check for null appliance relationships
+        foreach ($selectedAppliances as $selectedAppliance) {
+            if (!$selectedAppliance->appliance) {
+                \Log::warning('SelectedAppliance has no associated Appliance', [
+                    'selected_appliance_id' => $selectedAppliance->id,
+                    'appliance_id' => $selectedAppliance->appliance_id,
+                ]);
+            }
+        }
 
         // Fetch predictions from the session or database
         $predictions = session('predictions', []); // Retrieve from session or default to an empty array
@@ -23,7 +33,7 @@ class ScheduleController extends Controller
         // Pass the data to the view
         return view('dashboard', [
             'appliances' => $appliances,
-            'schedules' => $schedules,
+            'selectedAppliances' => $selectedAppliances,
             'predictions' => $predictions,
         ]);
     }
@@ -180,6 +190,19 @@ class ScheduleController extends Controller
                     $cheapestWindow = $windows[0];
                     $startHour = $cheapestWindow['startHour'];
 
+                    // Calculate predicted start and end times
+                    $predictedStartTime = date('H:i', strtotime("$startHour:00"));
+                    $predictedEndTime = date('H:i', strtotime("$startHour:00") + ($appliance['duration'] * 3600));
+
+                    // Save the predicted times to the selected_appliances table
+                    SelectedAppliance::where('appliance_id', $appliance['id'])
+                        ->whereJsonContains('usage_days', strtolower($day))
+                        ->update([
+                            'predicted_start_time' => $predictedStartTime,
+                            'predicted_end_time' => $predictedEndTime,
+                        ]);
+
+                    // Add to the schedule
                     for ($i = 0; $i < $appliance['duration']; $i++) {
                         $currentHour = $startHour + $i;
                         $schedule[$day][$currentHour] = [
@@ -195,18 +218,6 @@ class ScheduleController extends Controller
 
         // Log the schedule for debugging
         \Log::info('Generated schedule:', ['schedule' => $schedule]);
-
-        // Save the schedule to the database
-        foreach ($schedule as $day => $hours) {
-            foreach ($hours as $hour => $appliance) {
-                Schedule::create([
-                    'appliance_id' => $appliance['appliance_id'],
-                    'day' => $day,
-                    'start_hour' => $appliance['start_hour'],
-                    'end_hour' => $appliance['end_hour'],
-                ]);
-            }
-        }
 
         return $schedule;
     }

@@ -69,21 +69,33 @@
             <table>
                 <thead>
                     <tr>
-                        <th>Day</th>
-                        <th>Appliance</th>
-                        <th>Start Hour</th>
-                        <th>End Hour</th>
+                        <th>Time</th>
+                        @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
+                            <th>{{ $day }}</th>
+                        @endforeach
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach ($schedules as $schedule)
-                        <tr>
-                            <td>{{ $schedule->day }}</td>
-                            <td>{{ $schedule->appliance->name }}</td>
-                            <td>{{ $schedule->start_hour }}:00</td>
-                            <td>{{ $schedule->end_hour }}:00</td>
-                        </tr>
-                    @endforeach
+                    @for ($hour = 0; $hour < 24; $hour++)
+                            <tr>
+                                <td>{{ sprintf('%02d:00', $hour) }}</td>
+                                @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
+                                            <td>
+                                                @foreach ($selectedAppliances as $selectedAppliance)
+                                                                @if (in_array(strtolower($day), json_decode($selectedAppliance->usage_days, true)))
+                                                                                @php
+                                                                                    $startHour = (int) date('H', strtotime($selectedAppliance->predicted_start_time));
+                                                                                    $endHour = (int) date('H', strtotime($selectedAppliance->predicted_end_time));
+                                                                                @endphp
+                                                                                @if ($hour >= $startHour && $hour < $endHour)
+                                                                                    {{ $selectedAppliance->appliance->name ?? 'Appliance Not Found' }}
+                                                                                @endif
+                                                                @endif
+                                                @endforeach
+                                            </td>
+                                @endforeach
+                            </tr>
+                    @endfor
                 </tbody>
             </table>
         </div>
