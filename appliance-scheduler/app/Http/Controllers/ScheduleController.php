@@ -6,7 +6,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use App\Models\Appliance;
 use App\Models\Schedule;
-use Storage\Logs;
 
 class ScheduleController extends Controller
 {
@@ -30,10 +29,16 @@ class ScheduleController extends Controller
     {
         set_time_limit(300);
 
+        // Log the start_date being sent to FastAPI
+        \Log::info('Sending start_date to FastAPI', ['start_date' => $request->input('start_date')]);
+
         // Call the FastAPI endpoint to get predictions
         $response = Http::timeout(300)->post('http://127.0.0.1:8000/predict', [
-            'start_date' => $request->input('start_date'),
+            'start_date' => $request->input('start_date'), // Ensure this is in the correct format
         ]);
+
+        // Log the response from FastAPI
+        \Log::info('FastAPI response', ['status' => $response->status(), 'body' => $response->body()]);
 
         if ($response->failed()) {
             return back()->withErrors('Failed to fetch predictions. Please try again.');
@@ -50,7 +55,7 @@ class ScheduleController extends Controller
                 'preferred_start' => $appliance->preferred_start,
                 'preferred_end' => $appliance->preferred_end,
                 'duration' => $appliance->duration,
-                'usage_days' => json_decode($appliance->usage_days, true),
+                'usage_days' => json_decode($appliance->usage_days, true) ?? [], // Default to an empty array if null
             ];
         })->toArray();
 
@@ -233,13 +238,6 @@ class ScheduleController extends Controller
     // Update an appliance
     public function updateAppliance(Request $request, $id)
     {
-        \Logs::info('Updating appliance:', [
-            'id' => $id,
-            'preferred_start' => $request->input('preferred_start'),
-            'preferred_end' => $request->input('preferred_end'),
-            'duration' => $request->input('duration'),
-        ]);
-
         $request->validate([
             'preferred_start' => 'required|date_format:H:i', // Validate time format (HH:mm)
             'preferred_end' => 'required|date_format:H:i',   // Validate time format (HH:mm)
@@ -250,7 +248,7 @@ class ScheduleController extends Controller
         $appliance->update([
             'preferred_start' => $request->input('preferred_start'),
             'preferred_end' => $request->input('preferred_end'),
-            'duration' => $request->input('duration'),
+            'duration' => $request->input('duration'), // Store duration as a decimal
         ]);
 
         return response()->json(['success' => true]);
