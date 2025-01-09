@@ -91,18 +91,6 @@ class ScheduleController extends Controller
             // Schedule the appliances
             $schedule = $this->scheduleAppliances($predictions, $appliances);
 
-            // Save the schedule to the database
-            foreach ($schedule as $day => $hours) {
-                foreach ($hours as $hour => $appliance) {
-                    Schedule::create([
-                        'appliance_id' => $appliance['id'],
-                        'day' => $day,
-                        'start_hour' => $hour,
-                        'end_hour' => $hour + $appliance['duration'],
-                    ]);
-                }
-            }
-
             // Redirect to the dashboard
             return response()->json([
                 'success' => true,
@@ -195,10 +183,10 @@ class ScheduleController extends Controller
                     for ($i = 0; $i < $appliance['duration']; $i++) {
                         $currentHour = $startHour + $i;
                         $schedule[$day][$currentHour] = [
-                            'appliance' => $appliance['name'],
-                            'power' => $appliance['power'],
-                            'hour' => $currentHour,
-                            'price' => $predictionsByDay[$day][$currentHour]['Predicted Price [Euro/MWh]'],
+                            'appliance_id' => $appliance['id'],
+                            'day' => $day,
+                            'start_hour' => $currentHour,
+                            'end_hour' => $currentHour + 1, // Assuming 1-hour slots
                         ];
                     }
                 }
@@ -207,6 +195,18 @@ class ScheduleController extends Controller
 
         // Log the schedule for debugging
         \Log::info('Generated schedule:', ['schedule' => $schedule]);
+
+        // Save the schedule to the database
+        foreach ($schedule as $day => $hours) {
+            foreach ($hours as $hour => $appliance) {
+                Schedule::create([
+                    'appliance_id' => $appliance['appliance_id'],
+                    'day' => $day,
+                    'start_hour' => $appliance['start_hour'],
+                    'end_hour' => $appliance['end_hour'],
+                ]);
+            }
+        }
 
         return $schedule;
     }
