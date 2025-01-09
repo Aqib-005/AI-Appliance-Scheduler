@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use App\Models\Appliance;
+use App\Models\SelectedAppliance;
 use App\Models\Schedule;
 
 class ScheduleController extends Controller
@@ -15,11 +16,27 @@ class ScheduleController extends Controller
         // Fetch appliances and schedules
         $appliances = Appliance::all();
         $schedules = Schedule::with('appliance')->get();
-        $predictions = []; // Fetch predictions from your AI model (if needed)
 
+        // Fetch predictions from the session or database
+        $predictions = session('predictions', []); // Retrieve from session or default to an empty array
+
+        // Pass the data to the view
         return view('dashboard', [
             'appliances' => $appliances,
             'schedules' => $schedules,
+            'predictions' => $predictions,
+        ]);
+    }
+
+    public function showResults()
+    {
+        // Retrieve the schedule and predictions from the session or database
+        $schedule = session('schedule'); // Example: Retrieve from session
+        $predictions = session('predictions'); // Example: Retrieve from session
+
+        // Pass the data to the view
+        return view('results', [
+            'schedule' => $schedule,
             'predictions' => $predictions,
         ]);
     }
@@ -29,41 +46,72 @@ class ScheduleController extends Controller
     {
         set_time_limit(300);
 
-        // Log the start_date being sent to FastAPI
-        \Log::info('Sending start_date to FastAPI', ['start_date' => $request->input('start_date')]);
+        // Calculate the most recent Monday from the system time
+        $start_date = date('Y-m-d', strtotime('monday this week'));
+
+        // Log the calculated start_date
+        \Log::info('Calculated start_date:', ['start_date' => $start_date]);
 
         // Call the FastAPI endpoint to get predictions
-        $response = Http::timeout(300)->post('http://127.0.0.1:8000/predict', [
-            'start_date' => $request->input('start_date'), // Ensure this is in the correct format
-        ]);
+        try {
+            $response = Http::timeout(300)->post('http://127.0.0.1:8000/predict', [
+                'start_date' => $start_date,
+            ]);
 
-        // Log the response from FastAPI
-        \Log::info('FastAPI response', ['status' => $response->status(), 'body' => $response->body()]);
+            // Log the response from FastAPI
+            \Log::info('FastAPI response', [
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
 
-        if ($response->failed()) {
-            return back()->withErrors('Failed to fetch predictions. Please try again.');
+            if ($response->failed()) {
+                \Log::error('FastAPI request failed', [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
+                return response()->json(['success' => false, 'message' => 'Failed to fetch predictions. Please try again.'], 500);
+            }
+
+            // Get the predictions
+            $predictions = $response->json()['predictions'];
+
+            // Retrieve appliances from the database
+            $appliances = Appliance::all()->map(function ($appliance) {
+                return [
+                    'id' => $appliance->id,
+                    'name' => $appliance->name,
+                    'power' => $appliance->power,
+                    'preferred_start' => $appliance->preferred_start,
+                    'preferred_end' => $appliance->preferred_end,
+                    'duration' => $appliance->duration,
+                    'usage_days' => json_decode($appliance->usage_days, true) ?? [], // Default to an empty array if null
+                ];
+            })->toArray();
+
+            // Schedule the appliances
+            $schedule = $this->scheduleAppliances($predictions, $appliances);
+
+            // Save the schedule to the database
+            foreach ($schedule as $day => $hours) {
+                foreach ($hours as $hour => $appliance) {
+                    Schedule::create([
+                        'appliance_id' => $appliance['id'],
+                        'day' => $day,
+                        'start_hour' => $hour,
+                        'end_hour' => $hour + $appliance['duration'],
+                    ]);
+                }
+            }
+
+            // Redirect to the dashboard
+            return response()->json([
+                'success' => true,
+                'redirect_url' => route('dashboard'), // Redirect to the dashboard
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error in store method:', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'An error occurred. Please try again.'], 500);
         }
-
-        // Get the predictions
-        $predictions = $response->json()['predictions'];
-
-        // Retrieve appliances from the database
-        $appliances = Appliance::all()->map(function ($appliance) {
-            return [
-                'name' => $appliance->name,
-                'power' => $appliance->power,
-                'preferred_start' => $appliance->preferred_start,
-                'preferred_end' => $appliance->preferred_end,
-                'duration' => $appliance->duration,
-                'usage_days' => json_decode($appliance->usage_days, true) ?? [], // Default to an empty array if null
-            ];
-        })->toArray();
-
-        // Schedule the appliances
-        $schedule = $this->scheduleAppliances($predictions, $appliances);
-
-        // Pass the schedule to the view
-        return view('results', ['predictions' => $predictions, 'schedule' => $schedule]);
     }
 
     // Schedule appliances based on predictions
@@ -156,6 +204,9 @@ class ScheduleController extends Controller
                 }
             }
         }
+
+        // Log the schedule for debugging
+        \Log::info('Generated schedule:', ['schedule' => $schedule]);
 
         return $schedule;
     }
@@ -254,9 +305,38 @@ class ScheduleController extends Controller
         return response()->json(['success' => true]);
     }
 
+    public function addSelectedAppliance(Request $request)
+    {
+        $request->validate([
+            'appliance_id' => 'required|integer',
+            'name' => 'required|string',
+            'preferred_start' => 'required|date_format:H:i',
+            'preferred_end' => 'required|date_format:H:i',
+            'duration' => 'required|numeric',
+            'usage_days' => 'required|array',
+        ]);
+
+        // Save the selected appliance to the database
+        SelectedAppliance::create([
+            'appliance_id' => $request->input('appliance_id'),
+            'name' => $request->input('name'),
+            'preferred_start' => $request->input('preferred_start'),
+            'preferred_end' => $request->input('preferred_end'),
+            'duration' => $request->input('duration'),
+            'usage_days' => json_encode($request->input('usage_days')), // Save as JSON
+        ]);
+
+        return response()->json(['success' => true]);
+    }
+
     public function createSchedule()
     {
         $appliances = Appliance::all();
-        return view('schedule', ['appliances' => $appliances]);
+        $selectedAppliances = SelectedAppliance::all();
+
+        return view('schedule', [
+            'appliances' => $appliances,
+            'selectedAppliances' => $selectedAppliances,
+        ]);
     }
 }

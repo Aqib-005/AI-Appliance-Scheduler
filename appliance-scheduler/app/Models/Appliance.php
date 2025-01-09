@@ -23,6 +23,10 @@ class Appliance extends Model
         'usage_days', // Add this
     ];
 
+    protected $casts = [
+        'usage_days' => 'array',
+    ];
+
     public function schedules()
     {
         return $this->hasMany(Schedule::class);

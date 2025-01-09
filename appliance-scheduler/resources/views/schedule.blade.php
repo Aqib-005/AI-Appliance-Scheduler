@@ -110,7 +110,14 @@
                 <div class="day-column" onclick="selectDay('{{ strtolower($day) }}')">
                     <h3>{{ $day }}</h3>
                     <div id="appliances-{{ strtolower($day) }}" class="appliances-container">
-                        <!-- Appliances will be dynamically added here -->
+                        @foreach ($selectedAppliances as $appliance)
+                            @if (in_array(strtolower($day), json_decode($appliance->usage_days, true)))
+                                <div class="appliance-item">
+                                    <span>{{ $appliance->name }} ({{ $appliance->preferred_start }} -
+                                        {{ $appliance->preferred_end }}, {{ $appliance->duration }} hrs)</span>
+                                </div>
+                            @endif
+                        @endforeach
                     </div>
                 </div>
             @endforeach
@@ -120,7 +127,6 @@
     <!-- Schedule Button -->
     <button class="schedule-button" onclick="runSchedulingAlgorithm()">Schedule</button>
 
-    <!-- Schedule Popup -->
     <!-- Schedule Popup -->
     <div id="schedulePopup" class="popup">
         <h2>Schedule Appliance for <span id="selectedDayName"></span></h2>
@@ -239,6 +245,8 @@
 
         // Run the scheduling algorithm
         function runSchedulingAlgorithm() {
+            console.log('Running scheduling algorithm...'); // Debugging
+
             // Fetch predictions and generate the schedule
             fetch('/schedule', {
                 method: 'POST',
@@ -249,16 +257,21 @@
                 body: JSON.stringify({}), // No need to send start_date
             })
                 .then(response => {
+                    console.log('Response status:', response.status); // Debugging
                     if (!response.ok) {
-                        throw new Error('Network response was not ok');
+                        // Log the response text for debugging
+                        return response.text().then(text => {
+                            console.error('Response text:', text); // Debugging
+                            throw new Error('Network response was not ok');
+                        });
                     }
                     return response.json();
                 })
                 .then(data => {
                     console.log('Schedule generated:', data); // Debugging
                     if (data.success) {
-                        // Redirect to the results page or update the UI with the schedule
-                        window.location.href = '/results'; // Example: Redirect to the results page
+                        // Redirect to the dashboard
+                        window.location.href = data.redirect_url;
                     } else {
                         alert('Failed to generate schedule. Please try again.');
                     }
@@ -297,17 +310,20 @@
                 return;
             }
 
-            // Update the appliance in the database (using AJAX)
-            fetch(`/appliance/update/${selectedApplianceId}`, {
-                method: 'PUT',
+            // Save the selected appliance to the database
+            fetch('/selected-appliance/add', {
+                method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-CSRF-TOKEN': '{{ csrf_token() }}',
                 },
                 body: JSON.stringify({
+                    appliance_id: selectedApplianceId,
+                    name: document.getElementById('applianceName').value,
                     preferred_start: preferredStart,
                     preferred_end: preferredEnd,
-                    duration: duration, // Send duration as a decimal
+                    duration: duration,
+                    usage_days: [selectedDay], // Save the selected day as an array
                 }),
             })
                 .then(response => {
@@ -332,12 +348,12 @@
                         // Close the popup
                         closeSchedulePopup();
                     } else {
-                        alert('Failed to update appliance. Please try again.');
+                        alert('Failed to add appliance. Please try again.');
                     }
                 })
                 .catch(error => {
                     console.error('API Error:', error); // Debugging
-                    alert('Failed to update appliance. Please try again.');
+                    alert('Failed to add appliance. Please try again.');
                 });
         }
     </script>

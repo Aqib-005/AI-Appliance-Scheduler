@@ -114,12 +114,18 @@
                         </tr>
                     </thead>
                     <tbody>
-                        @foreach ($predictions as $prediction)
+                        @if (isset($predictions))
+                            @foreach ($predictions as $prediction)
+                                <tr>
+                                    <td>{{ $prediction['Start date/time'] }}</td>
+                                    <td>{{ $prediction['Predicted Price [Euro/MWh]'] }}</td>
+                                </tr>
+                            @endforeach
+                        @else
                             <tr>
-                                <td>{{ $prediction['Start date/time'] }}</td>
-                                <td>{{ $prediction['Predicted Price [Euro/MWh]'] }}</td>
+                                <td colspan="2">No predictions available.</td>
                             </tr>
-                        @endforeach
+                        @endif
                     </tbody>
                 </table>
             </div>
