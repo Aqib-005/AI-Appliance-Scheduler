@@ -17,7 +17,7 @@ Route::post('/selected-appliance/add', [ScheduleController::class, 'addSelectedA
 // Manage Appliances
 Route::get('/appliances/manage', [ScheduleController::class, 'manageAppliances'])->name('appliances.manage');
 Route::post('/appliance/add', [ScheduleController::class, 'addAppliance'])->name('appliance.add');
-Route::get('/appliance/edit/{id}', [ScheduleController::class, 'editAppliance'])->name('appliance.edit');
+Route::put('/appliance/edit/{id}', [ScheduleController::class, 'editAppliance'])->name('appliance.edit');
 Route::put('/appliance/update/{id}', [ScheduleController::class, 'updateAppliance'])->name('appliance.update');
 Route::delete('/appliance/remove/{id}', [ScheduleController::class, 'removeAppliance'])->name('appliance.remove');
 Route::get('/appliance/get/{id}', [ScheduleController::class, 'getAppliance'])->name('appliance.get');

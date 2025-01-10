@@ -17,10 +17,10 @@ class Appliance extends Model
     protected $fillable = [
         'name',
         'power',
-        'preferred_start',
-        'preferred_end',
+        'preferred_start', 
+        'preferred_end',    
         'duration',
-        'usage_days', // Add this
+        'usage_days',
     ];
 
     protected $casts = [

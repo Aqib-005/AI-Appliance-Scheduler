@@ -240,8 +240,8 @@ class ScheduleController extends Controller
         $request->validate([
             'name' => 'required|string',
             'power' => 'required|numeric',
-            'preferred_start' => 'required|integer|min:0|max:23',
-            'preferred_end' => 'required|integer|min:0|max:23',
+            'preferred_start' => 'required|date_format:H:i',
+            'preferred_end' => 'required|date_format:H:i',
             'duration' => 'required|numeric',
         ]);
 
@@ -251,7 +251,6 @@ class ScheduleController extends Controller
             'preferred_start' => $request->input('preferred_start'),
             'preferred_end' => $request->input('preferred_end'),
             'duration' => $request->input('duration'),
-            'usage_days' => null, // Set usage_days to null
         ]);
 
         return redirect()->route('appliances.manage')->with('success', 'Appliance added successfully.');
@@ -276,27 +275,40 @@ class ScheduleController extends Controller
     // Edit an appliance
     public function editAppliance(Request $request, $id)
     {
-        $request->validate([
-            'name' => 'required|string',
-            'power' => 'required|numeric',
-            'preferred_start' => 'required|integer|min:0|max:23',
-            'preferred_end' => 'required|integer|min:0|max:23',
-            'duration' => 'required|numeric',
-        ]);
+        \Log::info('Request Data:', $request->all());
 
-        $appliance = Appliance::findOrFail($id);
-        $appliance->update([
-            'name' => $request->input('name'),
-            'power' => $request->input('power'),
-            'preferred_start' => $request->input('preferred_start'),
-            'preferred_end' => $request->input('preferred_end'),
-            'duration' => $request->input('duration'),
-            'usage_days' => null, // Set usage_days to null
-        ]);
+        try {
+            $validatedData = $request->validate([
+                'name' => 'required|string',
+                'power' => 'required|numeric',
+                'preferred_start' => 'required|date_format:H:i',
+                'preferred_end' => 'required|date_format:H:i',
+                'duration' => 'required|numeric',
+            ]);
 
-        return redirect()->route('appliances.manage')->with('success', 'Appliance updated successfully.');
+            \Log::info('Validation Passed:', $validatedData);
+
+            $appliance = Appliance::find($id);
+
+            if (!$appliance) {
+                \Log::error('Appliance not found:', ['id' => $id]);
+                return redirect()->route('appliances.manage')->with('error', 'Appliance not found.');
+            }
+
+            \Log::info('Appliance ID:', ['id' => $id]);
+            \Log::info('Appliance Data Before Update:', $appliance->toArray());
+
+            $updated = $appliance->update($validatedData);
+
+            \Log::info('Update Result:', ['updated' => $updated]);
+            \Log::info('Updated Appliance:', $appliance->toArray());
+
+            return redirect()->route('appliances.manage')->with('success', 'Appliance updated successfully.');
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            \Log::error('Validation Failed:', $e->errors());
+            return redirect()->back()->withErrors($e->errors())->withInput();
+        }
     }
-
     // Update an appliance
     public function updateAppliance(Request $request, $id)
     {
@@ -327,7 +339,17 @@ class ScheduleController extends Controller
             'usage_days' => 'required|array',
         ]);
 
-        // Save the selected appliance to the database
+        // Update the appliance in the appliances table
+        $appliance = Appliance::find($request->input('appliance_id'));
+        if ($appliance) {
+            $appliance->update([
+                'preferred_start' => $request->input('preferred_start'),
+                'preferred_end' => $request->input('preferred_end'),
+                'duration' => $request->input('duration'),
+            ]);
+        }
+
+        // Save the selected appliance to the selected_appliances table
         SelectedAppliance::create([
             'appliance_id' => $request->input('appliance_id'),
             'name' => $request->input('name'),

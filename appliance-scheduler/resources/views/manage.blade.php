@@ -93,8 +93,8 @@
                 <tr>
                     <td>{{ $appliance->name }}</td>
                     <td>{{ $appliance->power }}</td>
-                    <td>{{ $appliance->preferred_start }}</td>
-                    <td>{{ $appliance->preferred_end }}</td>
+                    <td>{{ date('H:i', strtotime($appliance->preferred_start)) }}</td>
+                    <td>{{ date('H:i', strtotime($appliance->preferred_end)) }}</td>
                     <td>{{ $appliance->duration }}</td>
                     <td>
                         <button onclick="openEditPopup({{ $appliance->id }})">Edit</button>
@@ -116,11 +116,11 @@
             <label for="power">Power (kW):</label>
             <input type="number" step="0.1" id="power" name="power" required>
             <br>
-            <label for="preferred_start">Preferred Start Hour (0-23):</label>
-            <input type="number" id="preferred_start" name="preferred_start" min="0" max="23" required>
+            <label for="preferred_start">Preferred Start Time:</label>
+            <input type="time" id="preferred_start" name="preferred_start" required>
             <br>
-            <label for="preferred_end">Preferred End Hour (0-23):</label>
-            <input type="number" id="preferred_end" name="preferred_end" min="0" max="23" required>
+            <label for="preferred_end">Preferred End Time:</label>
+            <input type="time" id="preferred_end" name="preferred_end" required>
             <br>
             <label for="duration">Duration (hours):</label>
             <input type="number" step="0.1" id="duration" name="duration" required>
@@ -135,18 +135,18 @@
         <h2>Edit Appliance</h2>
         <form id="editForm" method="POST">
             @csrf
-            @method('PUT')
+            @method('PUT') <!-- Add this line to spoof the PUT method -->
             <label for="edit_name">Appliance Name:</label>
             <input type="text" id="edit_name" name="name" required>
             <br>
             <label for="edit_power">Power (kW):</label>
             <input type="number" step="0.1" id="edit_power" name="power" required>
             <br>
-            <label for="edit_preferred_start">Preferred Start Hour (0-23):</label>
-            <input type="number" id="edit_preferred_start" name="preferred_start" min="0" max="23" required>
+            <label for="edit_preferred_start">Preferred Start Time:</label>
+            <input type="time" id="edit_preferred_start" name="preferred_start" required>
             <br>
-            <label for="edit_preferred_end">Preferred End Hour (0-23):</label>
-            <input type="number" id="edit_preferred_end" name="preferred_end" min="0" max="23" required>
+            <label for="edit_preferred_end">Preferred End Time:</label>
+            <input type="time" id="edit_preferred_end" name="preferred_end" required>
             <br>
             <label for="edit_duration">Duration (hours):</label>
             <input type="number" step="0.1" id="edit_duration" name="duration" required>
