@@ -135,7 +135,7 @@
         <h2>Edit Appliance</h2>
         <form id="editForm" method="POST">
             @csrf
-            @method('PUT') <!-- Add this line to spoof the PUT method -->
+            @method('PUT') 
             <label for="edit_name">Appliance Name:</label>
             <input type="text" id="edit_name" name="name" required>
             <br>

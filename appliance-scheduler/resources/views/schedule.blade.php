@@ -318,12 +318,12 @@
                     'X-CSRF-TOKEN': '{{ csrf_token() }}',
                 },
                 body: JSON.stringify({
-                    appliance_id: selectedApplianceId, // Ensure appliance_id is set
+                    appliance_id: selectedApplianceId, 
                     name: document.getElementById('applianceName').value,
                     preferred_start: preferredStart,
                     preferred_end: preferredEnd,
                     duration: duration,
-                    usage_days: [selectedDay], // Save the selected day as an array
+                    usage_days: [selectedDay], 
                 }),
             })
                 .then(response => {
