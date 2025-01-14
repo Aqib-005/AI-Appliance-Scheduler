@@ -188,11 +188,15 @@
             // Fetch appliance data (you can use AJAX or preload data)
             const appliance = {!! json_encode($appliances->keyBy('id')->toArray()) !!}[applianceId];
 
+            // Format the time values to ensure they are in H:i format
+            const preferredStart = appliance.preferred_start ? appliance.preferred_start.substring(0, 5) : '';
+            const preferredEnd = appliance.preferred_end ? appliance.preferred_end.substring(0, 5) : '';
+
             // Populate the form
             document.getElementById('edit_name').value = appliance.name;
             document.getElementById('edit_power').value = appliance.power;
-            document.getElementById('edit_preferred_start').value = appliance.preferred_start;
-            document.getElementById('edit_preferred_end').value = appliance.preferred_end;
+            document.getElementById('edit_preferred_start').value = preferredStart;
+            document.getElementById('edit_preferred_end').value = preferredEnd;
             document.getElementById('edit_duration').value = appliance.duration;
 
             // Set the form action

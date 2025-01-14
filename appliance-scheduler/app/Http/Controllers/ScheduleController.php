@@ -273,21 +273,24 @@ class ScheduleController extends Controller
     }
 
     // Edit an appliance
+    // Edit an appliance
     public function editAppliance(Request $request, $id)
     {
         \Log::info('Request Data:', $request->all());
 
         try {
+            // Validate the request data
             $validatedData = $request->validate([
                 'name' => 'required|string',
                 'power' => 'required|numeric',
-                'preferred_start' => 'required|date_format:H:i',
-                'preferred_end' => 'required|date_format:H:i',
+                'preferred_start' => 'required|date_format:H:i', // Ensure time is in H:i format
+                'preferred_end' => 'required|date_format:H:i',   // Ensure time is in H:i format
                 'duration' => 'required|numeric',
             ]);
 
             \Log::info('Validation Passed:', $validatedData);
 
+            // Find the appliance
             $appliance = Appliance::find($id);
 
             if (!$appliance) {
@@ -298,9 +301,16 @@ class ScheduleController extends Controller
             \Log::info('Appliance ID:', ['id' => $id]);
             \Log::info('Appliance Data Before Update:', $appliance->toArray());
 
-            $updated = $appliance->update($validatedData);
+            // Update the appliance with validated data
+            $appliance->update([
+                'name' => $validatedData['name'],
+                'power' => $validatedData['power'],
+                'preferred_start' => $validatedData['preferred_start'], // Ensure time is in H:i format
+                'preferred_end' => $validatedData['preferred_end'],     // Ensure time is in H:i format
+                'duration' => $validatedData['duration'],
+            ]);
 
-            \Log::info('Update Result:', ['updated' => $updated]);
+            \Log::info('Update Result:', ['updated' => true]);
             \Log::info('Updated Appliance:', $appliance->toArray());
 
             return redirect()->route('appliances.manage')->with('success', 'Appliance updated successfully.');
@@ -309,6 +319,7 @@ class ScheduleController extends Controller
             return redirect()->back()->withErrors($e->errors())->withInput();
         }
     }
+
     // Update an appliance
     public function updateAppliance(Request $request, $id)
     {
