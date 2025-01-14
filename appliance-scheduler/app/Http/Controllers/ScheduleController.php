@@ -17,6 +17,9 @@ class ScheduleController extends Controller
         $appliances = Appliance::all();
         $selectedAppliances = SelectedAppliance::with('appliance')->get();
 
+        // Fetch the schedule from the `schedules` table
+        $schedule = Schedule::with('appliance')->get();
+
         // Debugging: Check for null appliance relationships
         foreach ($selectedAppliances as $selectedAppliance) {
             if (!$selectedAppliance->appliance) {
@@ -34,6 +37,7 @@ class ScheduleController extends Controller
         return view('dashboard', [
             'appliances' => $appliances,
             'selectedAppliances' => $selectedAppliances,
+            'schedule' => $schedule,
             'predictions' => $predictions,
         ]);
     }
@@ -55,6 +59,8 @@ class ScheduleController extends Controller
     public function store(Request $request)
     {
         set_time_limit(300);
+
+        Schedule::truncate();
 
         // Calculate the most recent Monday from the system time
         $start_date = date('Y-m-d', strtotime('monday this week'));
@@ -85,16 +91,16 @@ class ScheduleController extends Controller
             // Get the predictions
             $predictions = $response->json()['predictions'];
 
-            // Retrieve appliances from the database
-            $appliances = Appliance::all()->map(function ($appliance) {
+            // Retrieve selected appliances from the database
+            $appliances = SelectedAppliance::all()->map(function ($selectedAppliance) {
                 return [
-                    'id' => $appliance->id,
-                    'name' => $appliance->name,
-                    'power' => $appliance->power,
-                    'preferred_start' => $appliance->preferred_start,
-                    'preferred_end' => $appliance->preferred_end,
-                    'duration' => $appliance->duration,
-                    'usage_days' => json_decode($appliance->usage_days, true) ?? [], // Default to an empty array if null
+                    'id' => $selectedAppliance->appliance_id, // Use appliance_id instead of id
+                    'name' => $selectedAppliance->name,
+                    'power' => $selectedAppliance->power,
+                    'preferred_start' => $selectedAppliance->preferred_start,
+                    'preferred_end' => $selectedAppliance->preferred_end,
+                    'duration' => $selectedAppliance->duration,
+                    'usage_days' => $selectedAppliance->usage_days,
                 ];
             })->toArray();
 
@@ -117,9 +123,12 @@ class ScheduleController extends Controller
     {
         set_time_limit(300);
 
+        \Log::info('Predictions:', $predictions);
+        \Log::info('Appliances:', $appliances);
+
         // Sort predictions by price (ascending)
         usort($predictions, function ($a, $b) {
-            return $a['Predicted Price [Euro/MWh]'] <=> $b['Predicted Price [Euro/MWh]'];
+            return (float) $a['Predicted Price [Euro/MWh]'] <=> (float) $b['Predicted Price [Euro/MWh]'];
         });
 
         // Initialize the schedule
@@ -135,84 +144,107 @@ class ScheduleController extends Controller
 
         // Sort appliances by priority (higher power consumption × duration first)
         usort($appliances, function ($a, $b) {
-            $priorityA = $a['power'] * $a['duration'];
-            $priorityB = $b['power'] * $b['duration'];
+            $priorityA = (float) $a['power'] * (float) $a['duration'];
+            $priorityB = (float) $b['power'] * (float) $b['duration'];
             return $priorityB <=> $priorityA; // Sort in descending order
         });
 
         // Assign appliances to the cheapest hours within their preferred time slots
         foreach ($appliances as $appliance) {
-            foreach ($appliance['usage_days'] as $day) {
-                if (!isset($predictionsByDay[$day])) {
-                    continue; // Skip if no predictions for this day
-                }
+            $day = $appliance['usage_days']; // usage_days is now a string (e.g., "Monday")
 
-                // Find all possible windows within the preferred time range
-                $windows = [];
-                for ($startHour = $appliance['preferred_start']; $startHour + $appliance['duration'] - 1 <= $appliance['preferred_end']; $startHour++) {
-                    // Calculate the total cost for this window
-                    $totalCost = 0;
-                    $conflict = false;
+            if (!isset($predictionsByDay[$day])) {
+                \Log::warning('No predictions for day:', ['day' => $day]);
+                continue; // Skip if no predictions for this day
+            }
 
-                    for ($i = 0; $i < $appliance['duration']; $i++) {
-                        $currentHour = $startHour + $i;
+            // Log the appliance and its preferences
+            \Log::info('Scheduling appliance:', [
+                'appliance_id' => $appliance['id'],
+                'day' => $day,
+                'preferred_start' => $appliance['preferred_start'],
+                'preferred_end' => $appliance['preferred_end'],
+                'duration' => $appliance['duration'],
+            ]);
 
-                        // Check if the hour is available
-                        if (isset($schedule[$day][$currentHour])) {
-                            $conflict = true;
-                            break;
-                        }
+            // Find all possible windows within the preferred time range
+            $windows = [];
+            for ($startHour = (int) $appliance['preferred_start']; $startHour + (int) $appliance['duration'] - 1 <= (int) $appliance['preferred_end']; $startHour++) {
+                // Calculate the total cost for this window
+                $totalCost = 0;
+                $conflict = false;
 
-                        // Add the price for this hour
-                        if (isset($predictionsByDay[$day][$currentHour])) {
-                            $totalCost += $predictionsByDay[$day][$currentHour]['Predicted Price [Euro/MWh]'];
-                        } else {
-                            $conflict = true; // Skip if any hour in the window is missing
-                            break;
-                        }
+                for ($i = 0; $i < (int) $appliance['duration']; $i++) {
+                    $currentHour = $startHour + $i;
+
+                    // Check if the hour is available
+                    if (isset($schedule[$day][$currentHour])) {
+                        $conflict = true;
+                        break;
                     }
 
-                    if (!$conflict) {
-                        $windows[] = [
-                            'startHour' => $startHour,
-                            'totalCost' => $totalCost,
-                        ];
+                    // Add the price for this hour
+                    if (isset($predictionsByDay[$day][$currentHour])) {
+                        $totalCost += (float) $predictionsByDay[$day][$currentHour]['Predicted Price [Euro/MWh]'];
+                    } else {
+                        $conflict = true; // Skip if any hour in the window is missing
+                        break;
                     }
                 }
 
-                // Sort windows by total cost (ascending)
-                usort($windows, function ($a, $b) {
-                    return $a['totalCost'] <=> $b['totalCost'];
-                });
-
-                // Assign the appliance to the cheapest available window
-                if (!empty($windows)) {
-                    $cheapestWindow = $windows[0];
-                    $startHour = $cheapestWindow['startHour'];
-
-                    // Calculate predicted start and end times
-                    $predictedStartTime = date('H:i', strtotime("$startHour:00"));
-                    $predictedEndTime = date('H:i', strtotime("$startHour:00") + ($appliance['duration'] * 3600));
-
-                    // Save the predicted times to the selected_appliances table
-                    SelectedAppliance::where('appliance_id', $appliance['id'])
-                        ->whereJsonContains('usage_days', strtolower($day))
-                        ->update([
-                            'predicted_start_time' => $predictedStartTime,
-                            'predicted_end_time' => $predictedEndTime,
-                        ]);
-
-                    // Add to the schedule
-                    for ($i = 0; $i < $appliance['duration']; $i++) {
-                        $currentHour = $startHour + $i;
-                        $schedule[$day][$currentHour] = [
-                            'appliance_id' => $appliance['id'],
-                            'day' => $day,
-                            'start_hour' => $currentHour,
-                            'end_hour' => $currentHour + 1, // Assuming 1-hour slots
-                        ];
-                    }
+                if (!$conflict) {
+                    $windows[] = [
+                        'startHour' => $startHour,
+                        'totalCost' => $totalCost,
+                    ];
                 }
+            }
+
+            // Sort windows by total cost (ascending)
+            usort($windows, function ($a, $b) {
+                return $a['totalCost'] <=> $b['totalCost'];
+            });
+
+            // Assign the appliance to the cheapest available window
+            if (!empty($windows)) {
+                $cheapestWindow = $windows[0];
+                $startHour = $cheapestWindow['startHour'];
+
+                // Calculate predicted start and end times
+                $predictedStartTime = date('H:i', strtotime("$startHour:00"));
+                $predictedEndTime = date('H:i', strtotime("$startHour:00") + ($appliance['duration'] * 3600));
+
+                // Log the data being inserted
+                \Log::info('Creating schedule record:', [
+                    'appliance_id' => $appliance['id'],
+                    'day' => $day,
+                    'start_hour' => $startHour,
+                    'end_hour' => $startHour + $appliance['duration'],
+                    'predicted_start_time' => $predictedStartTime,
+                    'predicted_end_time' => $predictedEndTime,
+                ]);
+
+                // Save the schedule to the `schedules` table
+                Schedule::create([
+                    'appliance_id' => $appliance['id'],
+                    'day' => $day,
+                    'start_hour' => $startHour,
+                    'end_hour' => $startHour + $appliance['duration'],
+                    'predicted_start_time' => $predictedStartTime,
+                    'predicted_end_time' => $predictedEndTime,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+                // Mark the time slot as occupied
+                for ($i = 0; $i < (int) $appliance['duration']; $i++) {
+                    $schedule[$day][$startHour + $i] = true;
+                }
+            } else {
+                \Log::warning('No available windows for appliance:', [
+                    'appliance_id' => $appliance['id'],
+                    'day' => $day,
+                ]);
             }
         }
 
@@ -272,7 +304,6 @@ class ScheduleController extends Controller
         return view('manage', ['appliances' => $appliances]);
     }
 
-    // Edit an appliance
     // Edit an appliance
     public function editAppliance(Request $request, $id)
     {
@@ -343,34 +374,51 @@ class ScheduleController extends Controller
     {
         $request->validate([
             'appliance_id' => 'required|integer',
-            'name' => 'required|string',
             'preferred_start' => 'required|date_format:H:i',
             'preferred_end' => 'required|date_format:H:i',
             'duration' => 'required|numeric',
-            'usage_days' => 'required|array',
+            'usage_days' => 'required|string|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
         ]);
 
-        // Update the appliance in the appliances table
+        // Retrieve the appliance from the appliance table
         $appliance = Appliance::find($request->input('appliance_id'));
-        if ($appliance) {
-            $appliance->update([
-                'preferred_start' => $request->input('preferred_start'),
-                'preferred_end' => $request->input('preferred_end'),
-                'duration' => $request->input('duration'),
-            ]);
+
+        if (!$appliance) {
+            return response()->json(['success' => false, 'message' => 'Appliance not found.'], 404);
         }
 
-        // Save the selected appliance to the selected_appliances table
+        // Save the selected appliance to the selected_appliance table
         SelectedAppliance::create([
             'appliance_id' => $request->input('appliance_id'),
-            'name' => $request->input('name'),
+            'name' => $appliance->name, // Get name from appliance table
+            'power' => $appliance->power, // Get power from appliance table
             'preferred_start' => $request->input('preferred_start'),
             'preferred_end' => $request->input('preferred_end'),
             'duration' => $request->input('duration'),
-            'usage_days' => json_encode($request->input('usage_days')), // Save as JSON
+            'usage_days' => $request->input('usage_days'), // Save as a string
         ]);
 
         return response()->json(['success' => true]);
+    }
+
+    public function removeSelectedAppliance($id)
+    {
+        try {
+            // Find the selected appliance
+            $selectedAppliance = SelectedAppliance::find($id);
+
+            if (!$selectedAppliance) {
+                return response()->json(['success' => false, 'message' => 'Appliance not found.'], 404);
+            }
+
+            // Delete the selected appliance
+            $selectedAppliance->delete();
+
+            return response()->json(['success' => true]);
+        } catch (\Exception $e) {
+            \Log::error('Error removing appliance:', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'An error occurred. Please try again.'], 500);
+        }
     }
 
     public function createSchedule()

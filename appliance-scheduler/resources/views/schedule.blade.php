@@ -46,6 +46,19 @@
             align-items: center;
         }
 
+        .appliance-item button {
+            background-color: #ff4d4d;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+
+        .appliance-item button:hover {
+            background-color: #cc0000;
+        }
+
         .popup {
             display: none;
             position: fixed;
@@ -107,14 +120,16 @@
         <!-- Weekly Grid Table -->
         <div class="weekly-grid">
             @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
-                <div class="day-column" onclick="selectDay('{{ strtolower($day) }}')">
+                <div class="day-column" onclick="selectDay('{{ $day }}')">
                     <h3>{{ $day }}</h3>
                     <div id="appliances-{{ strtolower($day) }}" class="appliances-container">
                         @foreach ($selectedAppliances as $appliance)
-                            @if (in_array(strtolower($day), json_decode($appliance->usage_days, true)))
-                                <div class="appliance-item">
+                            @if (strtolower($appliance->usage_days) === strtolower($day))
+                                <div class="appliance-item" id="appliance-{{ $appliance->id }}">
                                     <span>{{ $appliance->name }} ({{ $appliance->preferred_start }} -
                                         {{ $appliance->preferred_end }}, {{ $appliance->duration }} hrs)</span>
+                                    <button
+                                        onclick="removeAppliance({{ $appliance->id }}, '{{ strtolower($day) }}')">Remove</button>
                                 </div>
                             @endif
                         @endforeach
@@ -160,12 +175,6 @@
         let selectedApplianceEnd = null;
         let selectedApplianceDuration = null;
 
-        // Validate time format (HH:mm)
-        function isValidTime(time) {
-            const regex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/; // Matches HH:mm format
-            return regex.test(time);
-        }
-
         // Open the schedule popup
         function openSchedulePopup(applianceId, applianceName, preferredStart, preferredEnd, duration) {
             console.log('Appliance ID:', applianceId);
@@ -190,7 +199,7 @@
                     document.getElementById('preferredStart').value = preferredStartFormatted;
                     document.getElementById('preferredEnd').value = preferredEndFormatted;
                     document.getElementById('duration').value = data.duration; // Ensure this matches the format
-                    document.getElementById('selectedDayName').textContent = selectedDay ? selectedDay.charAt(0).toUpperCase() + selectedDay.slice(1) : '';
+                    document.getElementById('selectedDayName').textContent = selectedDay || '';
 
                     // Show the popup
                     document.getElementById('schedulePopup').classList.add('active');
@@ -211,36 +220,6 @@
         // Select a day
         function selectDay(day) {
             selectedDay = day;
-        }
-
-        // Validate duration format (HH:mm)
-        function isValidDuration(duration) {
-            const regex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/; // Matches HH:mm format
-            return regex.test(duration);
-        }
-
-        // Validate that the duration doesn't exceed the time range
-        function isDurationValid(startTime, endTime, duration) {
-            // Convert HH:mm to minutes
-            const start = startTime.split(':');
-            const end = endTime.split(':');
-            const startMinutes = parseInt(start[0]) * 60 + parseInt(start[1]);
-            const endMinutes = parseInt(end[0]) * 60 + parseInt(end[1]);
-
-            // Calculate the total time range in minutes
-            const timeRangeMinutes = endMinutes - startMinutes;
-
-            // Convert duration (decimal hours) to minutes
-            const durationMinutes = duration * 60;
-
-            // Debugging logs
-            console.log('Start Time (minutes):', startMinutes);
-            console.log('End Time (minutes):', endMinutes);
-            console.log('Duration (minutes):', durationMinutes);
-            console.log('Time Range (minutes):', timeRangeMinutes);
-
-            // Check if duration exceeds the time range
-            return durationMinutes <= timeRangeMinutes;
         }
 
         // Run the scheduling algorithm
@@ -304,12 +283,6 @@
                 return;
             }
 
-            // Validate that the duration doesn't exceed the time range
-            if (!isDurationValid(preferredStart, preferredEnd, duration)) {
-                alert('Duration exceeds the preferred time range. Please adjust the duration.');
-                return;
-            }
-
             // Save the selected appliance to the database
             fetch('/selected-appliance/add', {
                 method: 'POST',
@@ -318,12 +291,12 @@
                     'X-CSRF-TOKEN': '{{ csrf_token() }}',
                 },
                 body: JSON.stringify({
-                    appliance_id: selectedApplianceId, 
+                    appliance_id: selectedApplianceId,
                     name: document.getElementById('applianceName').value,
                     preferred_start: preferredStart,
                     preferred_end: preferredEnd,
                     duration: duration,
-                    usage_days: [selectedDay], 
+                    usage_days: selectedDay, // Save as a string
                 }),
             })
                 .then(response => {
@@ -340,10 +313,11 @@
                         applianceItem.className = 'appliance-item';
                         applianceItem.innerHTML = `
                     <span>${document.getElementById('applianceName').value} (${preferredStart} - ${preferredEnd}, ${duration} hrs)</span>
+                    <button onclick="removeAppliance(${data.appliance_id}, '${selectedDay.toLowerCase()}')">Remove</button>
                 `;
 
                         // Add the appliance to the selected day's container
-                        document.getElementById(`appliances-${selectedDay}`).appendChild(applianceItem);
+                        document.getElementById(`appliances-${selectedDay.toLowerCase()}`).appendChild(applianceItem);
 
                         // Close the popup
                         closeSchedulePopup();
@@ -354,6 +328,43 @@
                 .catch(error => {
                     console.error('API Error:', error); // Debugging
                     alert('Failed to add appliance. Please try again.');
+                });
+        }
+
+        function removeAppliance(applianceId, day) {
+            if (!confirm('Are you sure you want to remove this appliance?')) {
+                return;
+            }
+
+            // Send a DELETE request to remove the appliance
+            fetch(`/selected-appliance/remove/${applianceId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                },
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('API Response:', data); // Debugging
+                    if (data.success) {
+                        // Remove the appliance from the UI
+                        const applianceElement = document.getElementById(`appliance-${applianceId}`);
+                        if (applianceElement) {
+                            applianceElement.remove();
+                        }
+                    } else {
+                        alert('Failed to remove appliance. Please try again.');
+                    }
+                })
+                .catch(error => {
+                    console.error('API Error:', error); // Debugging
+                    alert('Failed to remove appliance. Please try again.');
                 });
         }
     </script>
