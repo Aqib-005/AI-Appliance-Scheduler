@@ -120,10 +120,10 @@
                         </tr>
                     </thead>
                     <tbody>
-                        @if (isset($predictions))
+                        @if (!empty($predictions))
                             @foreach ($predictions as $prediction)
                                 <tr>
-                                    <td>{{ $prediction['Start date/time'] }}</td>
+                                    <td>{{ \Carbon\Carbon::parse($prediction['Start date/time'])->format('Y-m-d H:i') }}</td>
                                     <td>{{ $prediction['Predicted Price [Euro/MWh]'] }}</td>
                                 </tr>
                             @endforeach
