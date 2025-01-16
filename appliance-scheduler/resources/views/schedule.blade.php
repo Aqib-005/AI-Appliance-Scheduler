@@ -236,18 +236,18 @@
                 body: JSON.stringify({}), // No need to send start_date
             })
                 .then(response => {
-                    console.log('Response status:', response.status); // Debugging
+                    console.log('Response status:', response.status);
                     if (!response.ok) {
                         // Log the response text for debugging
                         return response.text().then(text => {
-                            console.error('Response text:', text); // Debugging
+                            console.error('Response text:', text);
                             throw new Error('Network response was not ok');
                         });
                     }
                     return response.json();
                 })
                 .then(data => {
-                    console.log('Schedule generated:', data); // Debugging
+                    console.log('Schedule generated:', data);
                     if (data.success) {
                         // Redirect to the dashboard
                         window.location.href = data.redirect_url;
@@ -256,7 +256,7 @@
                     }
                 })
                 .catch(error => {
-                    console.error('API Error:', error); // Debugging
+                    console.error('API Error:', error);
                     alert('Failed to generate schedule. Please try again.');
                 });
         }
