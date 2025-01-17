@@ -4,26 +4,45 @@
 <head>
     <title>Schedule Appliances</title>
     <style>
-        /* General Styles */
         body {
             font-family: Arial, sans-serif;
             margin: 0;
             padding: 20px;
             overflow-x: hidden;
-            /* Prevent horizontal scrolling */
+        }
+
+        h1 {
+            margin-bottom: 20px;
         }
 
         .container {
             display: flex;
             gap: 20px;
             flex-wrap: wrap;
-            /* Allow wrapping for smaller screens */
         }
 
         .appliance-list {
             flex: 1;
             min-width: 250px;
-            /* Ensure the appliance list doesn't get too small */
+        }
+
+        .appliance-list h2 {
+            margin-bottom: 10px;
+        }
+
+        .appliance-list button {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-align: left;
+        }
+
+        .appliance-list button:hover {
+            background-color: #0056b3;
         }
 
         .weekly-grid {
@@ -31,7 +50,6 @@
             display: flex;
             gap: 10px;
             overflow-x: auto;
-            /* Allow horizontal scrolling for the grid */
         }
 
         .day-column {
@@ -40,13 +58,17 @@
             padding: 10px;
             cursor: pointer;
             min-width: 150px;
-            /* Ensure columns don't get too narrow */
+            background-color: #f9f9f9;
         }
 
         .day-column.active {
             border: 2px solid #007bff;
-            /* Highlight selected day */
-            background-color: #f0f0f0;
+            background-color: #e9f5ff;
+        }
+
+        .day-column h3 {
+            margin-bottom: 10px;
+            text-align: center;
         }
 
         .appliance-item {
@@ -56,11 +78,11 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            background-color: white;
+            border-radius: 5px;
         }
 
         .appliance-item button {
-            background-color: #ff4d4d;
-            color: white;
             border: none;
             padding: 5px 10px;
             cursor: pointer;
@@ -81,6 +103,7 @@
             padding: 20px;
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
             z-index: 1000;
+            border-radius: 5px;
         }
 
         .overlay {
@@ -102,10 +125,15 @@
         .schedule-button {
             margin-top: 20px;
             padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
             cursor: pointer;
         }
 
-        /* Responsive Design */
+        .schedule-button:hover {
+            background-color: #218838;
+        }
+
         @media (max-width: 768px) {
             .container {
                 flex-direction: column;
@@ -117,7 +145,6 @@
 
             .day-column {
                 min-width: 100%;
-                /* Full width on small screens */
             }
         }
     </style>
@@ -126,23 +153,19 @@
 <body>
     <h1>Schedule Appliances</h1>
     <a href="{{ route('dashboard') }}">
-        <button>Back to Dashboard</button>
+        <button class="schedule-button">Back to Dashboard</button>
     </a>
 
     <div class="container">
         <!-- Appliance List -->
         <div class="appliance-list">
             <h2>Appliances</h2>
-            <ul>
-                @foreach ($appliances as $appliance)
-                    <li>
-                        <button
-                            onclick="openSchedulePopup('{{ $appliance->id }}', '{{ $appliance->name }}', '{{ $appliance->preferred_start }}', '{{ $appliance->preferred_end }}', '{{ $appliance->duration }}')">
-                            {{ $appliance->name }}
-                        </button>
-                    </li>
-                @endforeach
-            </ul>
+            @foreach ($appliances as $appliance)
+                <button
+                    onclick="openSchedulePopup('{{ $appliance->id }}', '{{ $appliance->name }}', '{{ $appliance->preferred_start }}', '{{ $appliance->preferred_end }}', '{{ $appliance->duration }}')">
+                    {{ $appliance->name }}
+                </button>
+            @endforeach
         </div>
 
         <!-- Weekly Grid Table -->
