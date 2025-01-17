@@ -9,21 +9,29 @@
             font-family: Arial, sans-serif;
             margin: 0;
             padding: 20px;
+            overflow-x: hidden;
+            /* Prevent horizontal scrolling */
         }
 
         .container {
             display: flex;
             gap: 20px;
+            flex-wrap: wrap;
+            /* Allow wrapping for smaller screens */
         }
 
         .appliance-list {
             flex: 1;
+            min-width: 250px;
+            /* Ensure the appliance list doesn't get too small */
         }
 
         .weekly-grid {
             flex: 3;
             display: flex;
             gap: 10px;
+            overflow-x: auto;
+            /* Allow horizontal scrolling for the grid */
         }
 
         .day-column {
@@ -31,9 +39,13 @@
             border: 1px solid #ccc;
             padding: 10px;
             cursor: pointer;
+            min-width: 150px;
+            /* Ensure columns don't get too narrow */
         }
 
         .day-column.active {
+            border: 2px solid #007bff;
+            /* Highlight selected day */
             background-color: #f0f0f0;
         }
 
@@ -92,6 +104,22 @@
             padding: 10px 20px;
             cursor: pointer;
         }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column;
+            }
+
+            .weekly-grid {
+                flex-direction: column;
+            }
+
+            .day-column {
+                min-width: 100%;
+                /* Full width on small screens */
+            }
+        }
     </style>
 </head>
 
@@ -120,7 +148,7 @@
         <!-- Weekly Grid Table -->
         <div class="weekly-grid">
             @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
-                <div class="day-column" onclick="selectDay('{{ $day }}')">
+                <div class="day-column" id="day-{{ strtolower($day) }}" onclick="selectDay('{{ $day }}')">
                     <h3>{{ $day }}</h3>
                     <div id="appliances-{{ strtolower($day) }}" class="appliances-container">
                         @foreach ($selectedAppliances as $appliance)
@@ -177,11 +205,10 @@
 
         // Open the schedule popup
         function openSchedulePopup(applianceId, applianceName, preferredStart, preferredEnd, duration) {
-            console.log('Appliance ID:', applianceId);
-            console.log('Appliance Name:', applianceName);
-            console.log('Preferred Start:', preferredStart);
-            console.log('Preferred End:', preferredEnd);
-            console.log('Duration:', duration);
+            if (!selectedDay) {
+                alert('Please select a day first.');
+                return;
+            }
 
             selectedApplianceId = applianceId; // Set the selected appliance ID
 
@@ -219,6 +246,13 @@
 
         // Select a day
         function selectDay(day) {
+            // Remove active class from all day columns
+            document.querySelectorAll('.day-column').forEach(column => {
+                column.classList.remove('active');
+            });
+
+            // Add active class to the selected day
+            document.getElementById(`day-${day.toLowerCase()}`).classList.add('active');
             selectedDay = day;
         }
 
