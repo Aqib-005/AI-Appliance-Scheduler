@@ -50,9 +50,6 @@ features = [
 ]
 target = 'Price Germany/Luxembourg [Euro/MWh]'
 
-# Subset the data
-data_subset = data[features + [target]]
-
 # Split data chronologically for train-test
 train_data = data[data['Start date/time'] < '2023-09-30']
 test_data = data[data['Start date/time'] >= '2023-09-30']
@@ -67,11 +64,10 @@ scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# Reshape the features for LSTM input
-sequence_length = 48  # Increased sequence length to 48 hours
+# Reshape input data to (num_samples, sequence_length, num_features)
+sequence_length = 48  # Lookback period of 48 hours
 num_features = len(features)
 
-# Reshape input data to (num_samples, sequence_length, num_features)
 def create_sequences(data, sequence_length):
     X = []
     for i in range(len(data) - sequence_length):
@@ -82,64 +78,53 @@ X_train_scaled = create_sequences(X_train_scaled, sequence_length)
 X_test_scaled = create_sequences(X_test_scaled, sequence_length)
 
 # Adjust target data to match the sequences
-y_train_scaled = y_train[sequence_length:].values
-y_test_scaled = y_test[sequence_length:].values
+y_train = y_train.iloc[sequence_length:].values
+y_test = y_test.iloc[sequence_length:].values
 
 # Normalize the target
-y_train_mean, y_train_std = y_train_scaled.mean(), y_train_scaled.std()
-y_train_scaled = (y_train_scaled - y_train_mean) / y_train_std
+y_train_mean, y_train_std = y_train.mean(), y_train.std()
+y_train_scaled = (y_train - y_train_mean) / y_train_std
 
-# Debugging: Print shapes and values
-print("X_train_scaled shape:", X_train_scaled.shape)
-print("y_train_scaled shape:", y_train_scaled.shape)
-print("Sample X_train_scaled:", X_train_scaled[0])
-print("Sample y_train_scaled:", y_train_scaled[0])
-
-# Define model-building function for Keras Tuner
+# Model-building function for Keras Tuner
 def build_model(hp):
     model = Sequential()
-    
-    # Single LSTM layer
     model.add(LSTM(units=hp.Int('units', min_value=32, max_value=128, step=32),
                    input_shape=(sequence_length, num_features)))
     model.add(Dropout(hp.Float('dropout', min_value=0.2, max_value=0.5, step=0.1)))
-    
-    # Dense output layer
     model.add(Dense(units=1))
-    
-    # Compile the model with gradient clipping
-    optimizer = Adam(learning_rate=hp.Choice('learning_rate', [0.0001, 0.001, 0.01]), clipvalue=1.0)
-    model.compile(optimizer=optimizer, loss='mean_squared_error')
+    model.compile(optimizer=Adam(learning_rate=hp.Choice('learning_rate', [0.0001, 0.001, 0.01]), clipvalue=1.0),
+                  loss='mean_squared_error')
     return model
 
 # Hyperparameter tuning
 tuner = RandomSearch(build_model, objective='val_loss', max_trials=10, executions_per_trial=1,
                      directory='tuner_logs', project_name='LSTM')
 
-# Early stopping and learning rate scheduler
 early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
 reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=0.0001)
 
 # Perform hyperparameter search
-tuner.search(X_train_scaled, y_train_scaled, epochs=20, validation_split=0.2, callbacks=[early_stopping, reduce_lr], verbose=2)
-best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
+tuner.search(X_train_scaled, y_train_scaled, epochs=20, validation_split=0.2, 
+             callbacks=[early_stopping, reduce_lr], verbose=2)
 
-# Train the best model
+best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
 model = tuner.hypermodel.build(best_hps)
+
 history = model.fit(X_train_scaled, y_train_scaled, epochs=100, batch_size=64, 
                     validation_split=0.2, callbacks=[early_stopping, reduce_lr], verbose=2)
 
 # Predictions and evaluation
 y_pred_scaled = model.predict(X_test_scaled)
 y_pred = y_pred_scaled * y_train_std + y_train_mean
-mse = mean_squared_error(y_test_scaled, y_pred)
-mae = mean_absolute_error(y_test_scaled, y_pred)
-r2 = r2_score(y_test_scaled, y_pred)
+mse = mean_squared_error(y_test, y_pred)
+mae = mean_absolute_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
 
 print(f"Best Hyperparameters: {best_hps.values}")
 print(f"Mean Squared Error: {mse:.4f}")
 print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
+
 
 
 # # Step 1: Forecast weather and grid load features for the next week
