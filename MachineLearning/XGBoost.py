@@ -1,11 +1,14 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import xgboost as xgb
 import matplotlib.pyplot as plt
 from prophet import Prophet
+import optuna
+from optuna.samplers import TPESampler
+import joblib
 
 # Load the data
 data = pd.read_csv("data/merged-data.csv")
@@ -20,7 +23,7 @@ data['Year'] = data['Start date/time'].dt.year
 data['Month'] = data['Start date/time'].dt.month
 data['Day'] = data['Start date/time'].dt.day
 data['Hour'] = data['Start date/time'].dt.hour
-data['DayOfWeek'] = data['Start date/time'].dt.dayofweek  # Add day of the week
+data['DayOfWeek'] = data['Start date/time'].dt.dayofweek
 
 # Create lagged features for target variable
 data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
@@ -33,15 +36,15 @@ data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window
 # Drop rows with missing values after lagging and rolling
 data = data.dropna()
 
-# Feature selection based on correlation and engineering
+# Feature selection
 features = [
     'temperature_2m (°C)', 
     'wind_speed_100m (km/h)', 
     'Total (grid consumption) [MWh]', 
     'Day', 
     'Hour', 
-    'DayOfWeek',  # Added day of the week
-    'Rolling_Temp_24h',  # Added rolling averages
+    'DayOfWeek',
+    'Rolling_Temp_24h',
     'Rolling_Wind_24h',
     'Rolling_Load_24h',
     'Lag_Price'
@@ -49,65 +52,92 @@ features = [
 target = 'Price Germany/Luxembourg [Euro/MWh]'
 
 # Subset the data
-data_subset = data[features + [target]]
-
-# Split data chronologically for train-test
-train_data = data[data['Start date/time'] < '2023-09-30']
-test_data = data[data['Start date/time'] >= '2023-09-30']
-
-X_train = train_data[features]
-y_train = train_data[target]
-X_test = test_data[features]
-y_test = test_data[target]
+X = data[features]
+y = data[target]
 
 # Normalize the features
 scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
+X_scaled = scaler.fit_transform(X)
 
-# Step 1: Hyperparameter tuning for XGBoost with TimeSeriesSplit
-tscv = TimeSeriesSplit(n_splits=5)  # Time-series cross-validation
+# TimeSeriesSplit for cross-validation
+tscv = TimeSeriesSplit(n_splits=5)
 
-# Expanded hyperparameter grid
-xgb_param_grid = {
-    'n_estimators': [50, 100, 200, 300, 500],
-    'max_depth': [3, 6, 9, 12, 15],
-    'learning_rate': [0.001, 0.01, 0.1, 0.2, 0.3],
-    'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
-    'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
-    'gamma': [0, 0.1, 0.2, 0.3, 0.4],
-    'min_child_weight': [1, 3, 5, 7],
-    'reg_alpha': [0, 0.1, 1, 10],
-    'reg_lambda': [0, 0.1, 1, 10]
-}
+# Define the objective function for Optuna
+def objective(trial):
+    params = {
+        'n_estimators': trial.suggest_int('n_estimators', 50, 300),
+        'max_depth': trial.suggest_int('max_depth', 3, 9),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2),
+        'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+        'gamma': trial.suggest_float('gamma', 0, 0.2),
+        'min_child_weight': trial.suggest_int('min_child_weight', 1, 5),
+        'reg_alpha': trial.suggest_float('reg_alpha', 0, 10),
+        'reg_lambda': trial.suggest_float('reg_lambda', 0, 10),
+        'random_state': 42,
+        'eval_metric': 'rmse',
+        'early_stopping_rounds': 50
+    }
 
-xgb_random = RandomizedSearchCV(
-    estimator=xgb.XGBRegressor(random_state=42),
-    param_distributions=xgb_param_grid,
-    n_iter=50,  # Increased number of iterations
-    cv=tscv,  # Use TimeSeriesSplit for cross-validation
-    verbose=2,
-    random_state=42,
-    n_jobs=-1
-)
+    scores = []
+    for train_index, val_index in tscv.split(X_scaled):
+        X_train, X_val = X_scaled[train_index], X_scaled[val_index]
+        y_train, y_val = y.iloc[train_index], y.iloc[val_index]
 
-xgb_random.fit(X_train_scaled, y_train)
-best_xgb = xgb_random.best_estimator_
-print(f"Best XGBoost Parameters: {xgb_random.best_params_}")
+        # Initialize the model
+        model = xgb.XGBRegressor(**params)
 
-# Predict with the best XGBoost model
-xgb_train_pred = best_xgb.predict(X_train_scaled)
-xgb_test_pred = best_xgb.predict(X_test_scaled)
+        # Fit the model with early stopping
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+            verbose=False
+        )
+        y_pred = model.predict(X_val)
+        scores.append(mean_squared_error(y_val, y_pred))
 
-# Evaluate the XGBoost model
-mse = mean_squared_error(y_test, xgb_test_pred)
-mae = mean_absolute_error(y_test, xgb_test_pred)
-r2 = r2_score(y_test, xgb_test_pred)
+    return np.mean(scores)
 
-print("XGBoost Model Evaluation:")
-print(f"Mean Squared Error: {mse:.4f}")
-print(f"Mean Absolute Error: {mae:.4f}")
-print(f"R-squared: {r2:.4f}")
+# Run Bayesian Optimization with Optuna
+study = optuna.create_study(direction='minimize', sampler=TPESampler(seed=42))
+study.optimize(objective, n_trials=50)
+
+# Get the best parameters
+best_params = study.best_params
+print(f"Best Parameters: {best_params}")
+
+# Train the final model with the best parameters
+best_xgb = xgb.XGBRegressor(**best_params, random_state=42)
+best_xgb.fit(X_scaled, y)
+
+# Evaluate the model using the last fold of TimeSeriesSplit
+train_index, test_index = list(tscv.split(X_scaled))[-1]
+X_train, X_test = X_scaled[train_index], X_scaled[test_index]
+y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+
+y_pred = best_xgb.predict(X_test)
+
+# Evaluation metrics
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+mae = mean_absolute_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+
+print("Evaluation Metrics:")
+print(f"RMSE: {rmse}")
+print(f"MAE: {mae}")
+print(f"R²: {r2}")
+
+# Analyze feature importance
+feature_importance = best_xgb.feature_importances_
+feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': feature_importance})
+feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False)
+
+plt.figure(figsize=(10, 6))
+plt.barh(feature_importance_df['Feature'], feature_importance_df['Importance'])
+plt.xlabel('Importance')
+plt.ylabel('Feature')
+plt.title('Feature Importance')
+plt.show()
 
 # Predict for the coming week
 # Assuming 'data' contains the latest available data
@@ -168,7 +198,7 @@ for i in range(len(future_data)):
     xgb_future_pred.append(pred[0])
     
     # Update Lag_Price for the next timestep
-    if i < len(future_data) - 1:
+    if i < len(future_data) - 1: 
         future_data.at[future_data.index[i+1], 'Lag_Price'] = pred[0]
 
 # Create a DataFrame for the predictions
