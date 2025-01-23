@@ -2,6 +2,12 @@
 
 Dissertation
 
+AI API:
+uvicorn api:app --reload --port 8000
+
+Laravel App:
+php artisan serve --port=8001
+
 TODO:
 
 1. Make three models ✔
