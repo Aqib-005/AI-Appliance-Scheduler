@@ -162,8 +162,10 @@ def forecast_feature(data, feature, periods=7*24):
     model = Prophet()
     model.fit(feature_data)
     future = model.make_future_dataframe(periods=periods, freq='h')
-    return future['yhat'].tail(periods).values
+    forecast = model.predict(future)
+    return forecast['yhat'].tail(periods).values
 
+# Forecast temperature, wind speed, and grid load
 future_data['temperature_2m (°C)'] = forecast_feature(data, 'temperature_2m (°C)')
 future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)')
 future_data['Total (grid consumption) [MWh]'] = forecast_feature(data, 'Total (grid consumption) [MWh]')
@@ -189,7 +191,7 @@ future_predictions_df = pd.DataFrame({
     'Predicted Price [Euro/MWh]': xgb_future_pred
 })
 
-# Load actual data
+# Load actual data (compressed)
 actual_data = pd.DataFrame({
     'Start date/time': [
         '2024-10-01 00:00:00', '2024-10-01 01:00:00', '2024-10-01 02:00:00', 
