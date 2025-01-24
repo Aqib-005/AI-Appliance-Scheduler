@@ -77,12 +77,15 @@ train_size = int(len(X_seq) * 0.8)
 X_train, X_test = X_seq[:train_size], X_seq[train_size:]
 y_train, y_test = y_seq[:train_size], y_seq[train_size:]
 
-# Build a simpler LSTM model
+# Build the hybrid LSTM-CNN model
 model = Sequential([
-    LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
-    Dropout(0.3),
-    LSTM(25, return_sequences=False),
-    Dropout(0.3),
+    Conv1D(filters=64, kernel_size=3, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])),
+    MaxPooling1D(pool_size=2),
+    Bidirectional(LSTM(100, return_sequences=True, kernel_regularizer=L2(0.1))),
+    Dropout(0.5),
+    Bidirectional(LSTM(50, return_sequences=False, kernel_regularizer=L2(0.1))),
+    Dropout(0.5),
+    Dense(25, activation='relu'),
     Dense(1)
 ])
 
