@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.linear_model import LinearRegression
 import xgboost as xgb
 import matplotlib.pyplot as plt
 from prophet import Prophet
@@ -32,13 +33,20 @@ data['is_holiday'] = data['Start date/time'].apply(lambda x: x in de_holidays).a
 # Add weekend indicator
 data['is_weekend'] = (data['DayOfWeek'] >= 5).astype(int)
 
+# Add seasonality feature
+data['Season'] = data['Month'] % 12 // 3 + 1  # 1: Winter, 2: Spring, 3: Summer, 4: Autumn
+
 # Create lagged features for target variable
 data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
+data['Lag_Price_48h'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(48)  # 48-hour lag
 
 # Add rolling averages for features
 data['Rolling_Temp_24h'] = data['temperature_2m (°C)'].rolling(window=24).mean()
 data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(window=24).mean()
 data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
+
+# Add interaction features
+data['Temp_Load_Interaction'] = data['temperature_2m (°C)'] * data['Total (grid consumption) [MWh]']
 
 # Drop rows with missing values after lagging and rolling
 data = data.dropna()
@@ -55,8 +63,11 @@ features = [
     'Rolling_Wind_24h',
     'Rolling_Load_24h',
     'Lag_Price',
+    'Lag_Price_48h',  # New lag feature
     'is_holiday',
-    'is_weekend'
+    'is_weekend',
+    'Season',  # New seasonal feature
+    'Temp_Load_Interaction'  # New interaction feature
 ]
 target = 'Price Germany/Luxembourg [Euro/MWh]'
 
@@ -74,15 +85,15 @@ tscv = TimeSeriesSplit(n_splits=5)
 # Define the objective function for Optuna
 def objective(trial):
     params = {
-        'n_estimators': trial.suggest_int('n_estimators', 50, 300),
-        'max_depth': trial.suggest_int('max_depth', 3, 9),
-        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2),
+        'n_estimators': trial.suggest_int('n_estimators', 100, 500),
+        'max_depth': trial.suggest_int('max_depth', 3, 12),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3),
         'subsample': trial.suggest_float('subsample', 0.6, 1.0),
         'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
-        'gamma': trial.suggest_float('gamma', 0, 0.2),
-        'min_child_weight': trial.suggest_int('min_child_weight', 1, 5),
-        'reg_alpha': trial.suggest_float('reg_alpha', 0, 10),
-        'reg_lambda': trial.suggest_float('reg_lambda', 0, 10),
+        'gamma': trial.suggest_float('gamma', 0, 0.5),
+        'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
+        'reg_alpha': trial.suggest_float('reg_alpha', 0, 20),
+        'reg_lambda': trial.suggest_float('reg_lambda', 0, 20),
         'random_state': 42,
         'eval_metric': 'rmse',
         'early_stopping_rounds': 50
@@ -119,12 +130,19 @@ y_train, y_test = y.iloc[train_index], y.iloc[test_index]
 
 y_pred = best_xgb.predict(X_test)
 
-# Evaluation metrics
-rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-mae = mean_absolute_error(y_test, y_pred)
-r2 = r2_score(y_test, y_pred)
+# Residual modeling (secondary model)
+residuals = y_test - y_pred
+residual_model = LinearRegression()
+residual_model.fit(X_test, residuals)
+residual_predictions = residual_model.predict(X_test)
+final_predictions = y_pred + residual_predictions
 
-print("\nEvaluation Metrics:")
+# Evaluation metrics
+rmse = np.sqrt(mean_squared_error(y_test, final_predictions))
+mae = mean_absolute_error(y_test, final_predictions)
+r2 = r2_score(y_test, final_predictions)
+
+print("\nFinal Evaluation Metrics with Residual Modeling:")
 print(f"RMSE: {rmse}")
 print(f"MAE: {mae}")
 print(f"R²: {r2}")
@@ -154,7 +172,9 @@ future_data['Hour'] = future_data.index.hour
 future_data['DayOfWeek'] = future_data.index.dayofweek
 future_data['is_weekend'] = (future_data['DayOfWeek'] >= 5).astype(int)
 future_data['is_holiday'] = future_data.index.to_series().apply(lambda x: x in de_holidays).astype(int)
+future_data['Season'] = future_data['Month'] % 12 // 3 + 1
 future_data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
+future_data['Lag_Price_48h'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-48]
 
 # Forecast weather data using Prophet
 def forecast_feature(data, feature, periods=7*24):
@@ -175,6 +195,9 @@ future_data['Rolling_Temp_24h'] = future_data['temperature_2m (°C)'].rolling(wi
 future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(window=24).mean()
 future_data['Rolling_Load_24h'] = future_data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
 future_data = future_data.bfill()
+
+# Add interaction feature for future data
+future_data['Temp_Load_Interaction'] = future_data['temperature_2m (°C)'] * future_data['Total (grid consumption) [MWh]']
 
 # Iteratively predict future prices
 xgb_future_pred = []
