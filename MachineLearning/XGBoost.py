@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from prophet import Prophet
 import optuna
 from optuna.samplers import TPESampler
-import holidays
+import joblib
 
 # Load the data
 data = pd.read_csv("data/merged-data.csv")
@@ -24,13 +24,6 @@ data['Month'] = data['Start date/time'].dt.month
 data['Day'] = data['Start date/time'].dt.day
 data['Hour'] = data['Start date/time'].dt.hour
 data['DayOfWeek'] = data['Start date/time'].dt.dayofweek
-
-# Add holiday indicator (Germany)
-de_holidays = holidays.Germany()
-data['is_holiday'] = data['Start date/time'].apply(lambda x: x in de_holidays).astype(int)
-
-# Add weekend indicator
-data['is_weekend'] = (data['DayOfWeek'] >= 5).astype(int)
 
 # Create lagged features for target variable
 data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
@@ -54,9 +47,7 @@ features = [
     'Rolling_Temp_24h',
     'Rolling_Wind_24h',
     'Rolling_Load_24h',
-    'Lag_Price',
-    'is_holiday',
-    'is_weekend'
+    'Lag_Price'
 ]
 target = 'Price Germany/Luxembourg [Euro/MWh]'
 
@@ -93,8 +84,15 @@ def objective(trial):
         X_train, X_val = X_scaled[train_index], X_scaled[val_index]
         y_train, y_val = y.iloc[train_index], y.iloc[val_index]
 
+        # Initialize the model
         model = xgb.XGBRegressor(**params)
-        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+
+        # Fit the model with early stopping
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+            verbose=False
+        )
         y_pred = model.predict(X_val)
         scores.append(mean_squared_error(y_val, y_pred))
 
@@ -124,7 +122,7 @@ rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 mae = mean_absolute_error(y_test, y_pred)
 r2 = r2_score(y_test, y_pred)
 
-print("\nEvaluation Metrics:")
+print("Evaluation Metrics:")
 print(f"RMSE: {rmse}")
 print(f"MAE: {mae}")
 print(f"R²: {r2}")
@@ -138,56 +136,80 @@ plt.figure(figsize=(10, 6))
 plt.barh(feature_importance_df['Feature'], feature_importance_df['Importance'])
 plt.xlabel('Importance')
 plt.ylabel('Feature')
-plt.title('Feature Importance (Including Holiday/Weekend Features)')
+plt.title('Feature Importance')
 plt.show()
 
 # Predict for the coming week
+# Assuming 'data' contains the latest available data
 last_date = data['Start date/time'].max()
-future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='h')
+future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='h')  # Use 'h' instead of 'H'
 
-# Create future DataFrame with new features
+# Create future DataFrame
 future_data = pd.DataFrame(index=future_dates)
 future_data['Year'] = future_data.index.year
 future_data['Month'] = future_data.index.month
 future_data['Day'] = future_data.index.day
 future_data['Hour'] = future_data.index.hour
-future_data['DayOfWeek'] = future_data.index.dayofweek
-future_data['is_weekend'] = (future_data['DayOfWeek'] >= 5).astype(int)
-future_data['is_holiday'] = future_data.index.to_series().apply(lambda x: x in de_holidays).astype(int)
+future_data['DayOfWeek'] = future_data.index.dayofweek  # Add day of the week
+
+# Initialize Lag_Price with the last observed price
 future_data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
 
-# Forecast weather data using Prophet
+# Step 1: Forecast weather data (temperature and wind speed) using Prophet
 def forecast_feature(data, feature, periods=7*24):
-    feature_data = data[['Start date/time', feature]].rename(columns={'Start date/time': 'ds', feature: 'y'})
+    # Prepare data for Prophet
+    feature_data = data[['Start date/time', feature]].rename(
+        columns={'Start date/time': 'ds', feature: 'y'}
+    )
+    
+    # Train Prophet model
     model = Prophet()
     model.fit(feature_data)
-    future = model.make_future_dataframe(periods=periods, freq='h')
-    return future['yhat'].tail(periods).values
+    
+    # Forecast for future dates
+    future = model.make_future_dataframe(periods=periods, freq='H')
+    forecast = model.predict(future)
+    
+    return forecast['yhat'].tail(periods).values
 
+# Forecast temperature and wind speed
 future_data['temperature_2m (°C)'] = forecast_feature(data, 'temperature_2m (°C)')
 future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)')
+
+# Step 2: Forecast grid load using Prophet
 future_data['Total (grid consumption) [MWh]'] = forecast_feature(data, 'Total (grid consumption) [MWh]')
 
 # Add rolling averages for future data
 future_data['Rolling_Temp_24h'] = future_data['temperature_2m (°C)'].rolling(window=24).mean()
 future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(window=24).mean()
 future_data['Rolling_Load_24h'] = future_data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
-future_data = future_data.bfill()
+
+# Fill NaN values in rolling averages (first 23 rows)
+future_data.fillna(method='bfill', inplace=True)
 
 # Iteratively predict future prices
 xgb_future_pred = []
 for i in range(len(future_data)):
-    future_data_scaled = scaler.transform(future_data[features].iloc[i:i+1])
+    # Scale the features for the current timestep
+    future_data_scaled = scaler.transform(future_data.iloc[i:i+1][features])
+    
+    # Predict the price for the current timestep
     pred = best_xgb.predict(future_data_scaled)
     xgb_future_pred.append(pred[0])
+    
+    # Update Lag_Price for the next timestep
     if i < len(future_data) - 1: 
         future_data.at[future_data.index[i+1], 'Lag_Price'] = pred[0]
 
-# Create predictions DataFrame
+# Create a DataFrame for the predictions
 future_predictions_df = pd.DataFrame({
-    'Start date/time': future_dates,
-    'Predicted Price [Euro/MWh]': xgb_future_pred
+    'Start date/time': future_dates,  # The future dates generated earlier
+    'Predicted Price [Euro/MWh]': xgb_future_pred  # The predicted prices
 })
+
+# Print the predictions with dates
+print("Predictions for the coming week:")
+print(future_predictions_df)
 
 # Load actual data
 actual_data = pd.DataFrame({
@@ -276,54 +298,13 @@ actual_data['Start date/time'] = pd.to_datetime(actual_data['Start date/time'])
 # Merge predictions and actual data
 comparison_df = pd.merge(future_predictions_df, actual_data, on='Start date/time', suffixes=('_predicted', '_actual'))
 
-# Enhanced residual analysis
-comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
-
-# Residual diagnostics plot
-plt.figure(figsize=(12, 6))
-plt.scatter(comparison_df['Predicted Price [Euro/MWh]'], comparison_df['Residuals'], alpha=0.6)
-plt.axhline(0, color='red', linestyle='--')
-plt.title('Residuals vs Predicted Values')
-plt.xlabel('Predicted Price [Euro/MWh]')
-plt.ylabel('Residuals')
-plt.grid(True)
-plt.show()
-
-# Residual distribution plot
-plt.figure(figsize=(10, 6))
-plt.hist(comparison_df['Residuals'], bins=30, edgecolor='k', alpha=0.7)
-plt.title('Distribution of Residuals')
-plt.xlabel('Residuals [Euro/MWh]')
-plt.ylabel('Frequency')
-plt.grid(True)
-plt.show()
-
-# Time-based residual analysis
-plt.figure(figsize=(14, 6))
-plt.plot(comparison_df['Start date/time'], comparison_df['Residuals'], marker='o', linestyle='')
-plt.axhline(0, color='black', linestyle='--')
-plt.fill_between(comparison_df['Start date/time'], 
-                 comparison_df['Residuals'], 
-                 where=(comparison_df['Residuals'] > 0),
-                 color='red', alpha=0.3, label='Overprediction')
-plt.fill_between(comparison_df['Start date/time'], 
-                 comparison_df['Residuals'], 
-                 where=(comparison_df['Residuals'] < 0),
-                 color='blue', alpha=0.3, label='Underprediction')
-plt.title('Time Series of Residuals with Over/Under Prediction Areas')
-plt.xlabel('Date/Time')
-plt.ylabel('Residuals [Euro/MWh]')
-plt.legend()
-plt.grid(True)
-plt.show()
-
 # Calculate evaluation metrics
 mse = mean_squared_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
 mae = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
 r2 = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
 rmse = np.sqrt(mse)
 
-print("Future Evaluation Metrics:")
+print("Evaluation Metrics:")
 print(f"Mean Squared Error: {mse:.4f}")
 print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
@@ -337,5 +318,16 @@ plt.title('Predicted vs Actual Hourly Prices')
 plt.xlabel('Date/Time')
 plt.ylabel('Price [Euro/MWh]')
 plt.legend()
+plt.grid(True)
+plt.show()
+
+# Plot residuals
+comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
+plt.figure(figsize=(12, 6))
+plt.plot(comparison_df['Start date/time'], comparison_df['Residuals'], marker='o', color='red')
+plt.axhline(0, color='black', linestyle='--')
+plt.title('Residuals (Actual - Predicted)')
+plt.xlabel('Date/Time')
+plt.ylabel('Residuals [Euro/MWh]')
 plt.grid(True)
 plt.show()
