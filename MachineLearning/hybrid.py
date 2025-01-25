@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import xgboost as xgb
 import matplotlib.pyplot as plt
@@ -30,7 +30,7 @@ prophet_df = data[['Start date/time', 'Price Germany/Luxembourg [Euro/MWh]']].re
 
 # Configure Prophet with German holidays
 m = Prophet(
-    yearly_seasonality=True,
+    yearly_seasonality=False,  # Disable yearly seasonality to speed up
     weekly_seasonality=True,
     daily_seasonality=True,
     changepoint_prior_scale=0.05
@@ -57,7 +57,6 @@ data['Month'] = data['Start date/time'].dt.month
 # Create rolling features with NaN handling
 for col in ['temperature_2m (°C)', 'wind_speed_100m (km/h)', 'Total (grid consumption) [MWh]']:
     data[f'Rolling_24h_{col}'] = data[col].rolling(24, min_periods=1).mean().ffill().bfill()
-    data[f'Rolling_48h_{col}'] = data[col].rolling(48, min_periods=1).mean().ffill().bfill()
 
 features = [
     'temperature_2m (°C)',
@@ -66,9 +65,6 @@ features = [
     'Rolling_24h_temperature_2m (°C)',
     'Rolling_24h_wind_speed_100m (km/h)',
     'Rolling_24h_Total (grid consumption) [MWh]',
-    'Rolling_48h_temperature_2m (°C)',
-    'Rolling_48h_wind_speed_100m (km/h)',
-    'Rolling_48h_Total (grid consumption) [MWh]',
     'prophet_trend',
     'Hour',
     'DayOfWeek',
@@ -85,23 +81,31 @@ scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
 # XGBoost Model ---------------------------------------------------------------
-# Hyperparameter tuning using GridSearchCV
+# Simplified hyperparameter grid for faster tuning
 param_grid = {
-    'n_estimators': [100, 200, 300],
-    'max_depth': [3, 6, 9],
-    'learning_rate': [0.01, 0.05, 0.1],
-    'subsample': [0.8, 0.9, 1.0],
-    'colsample_bytree': [0.8, 0.9, 1.0],
-    'gamma': [0, 0.1, 0.2],
-    'reg_alpha': [0, 10, 20],
-    'reg_lambda': [0, 10, 20]
+    'n_estimators': [100, 200],
+    'max_depth': [3, 6],
+    'learning_rate': [0.01, 0.1],
+    'subsample': [0.8, 1.0],
+    'colsample_bytree': [0.8, 1.0],
+    'gamma': [0, 0.1],
+    'reg_alpha': [0, 10],
+    'reg_lambda': [0, 10]
 }
 
 model = xgb.XGBRegressor(random_state=42)
-grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=3, scoring='neg_mean_squared_error', n_jobs=-1)
-grid_search.fit(X_scaled, y)
+randomized_search = RandomizedSearchCV(
+    estimator=model,
+    param_distributions=param_grid,
+    n_iter=10,  # Number of random combinations to try
+    cv=2,  # Fewer folds for faster tuning
+    scoring='neg_mean_squared_error',
+    n_jobs=-1,
+    random_state=42
+)
+randomized_search.fit(X_scaled, y)
 
-best_model = grid_search.best_estimator_
+best_model = randomized_search.best_estimator_
 
 # Generate Predictions --------------------------------------------------------
 data['xgb_residual_pred'] = best_model.predict(X_scaled)
@@ -134,7 +138,6 @@ def create_future_features(last_date, periods=168):
     # Add rolling features
     for col in ['temperature_2m (°C)', 'wind_speed_100m (km/h)', 'Total (grid consumption) [MWh]']:
         future_df[f'Rolling_24h_{col}'] = future_df[col].rolling(24, min_periods=1).mean().ffill().bfill()
-        future_df[f'Rolling_48h_{col}'] = future_df[col].rolling(48, min_periods=1).mean().ffill().bfill()
     
     # Time features
     future_df['Hour'] = future_df['ds'].dt.hour
