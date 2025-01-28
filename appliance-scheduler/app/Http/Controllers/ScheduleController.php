@@ -144,12 +144,12 @@ class ScheduleController extends Controller
         // Group predictions by day
         $predictionsByDay = [];
         foreach ($predictions as $prediction) {
-            $day = date('l', strtotime($prediction['Start date/time'])); // Get the day name (e.g., Monday)
-            $hour = (int) date('H', strtotime($prediction['Start date/time'])); // Get the hour (0-23)
+            $day = date('l', strtotime($prediction['Start date/time'])); 
+            $hour = (int) date('H', strtotime($prediction['Start date/time'])); 
             $predictionsByDay[$day][$hour] = $prediction; // Store predictions by day and hour
         }
 
-        // Sort appliances by priority (higher power consumption × duration first)
+        // Sort appliances by priority 
         usort($appliances, function ($a, $b) {
             $priorityA = (float) $a['power'] * (float) $a['duration'];
             $priorityB = (float) $b['power'] * (float) $b['duration'];
@@ -158,7 +158,7 @@ class ScheduleController extends Controller
 
         // Assign appliances to the cheapest hours within their preferred time slots
         foreach ($appliances as $appliance) {
-            $day = $appliance['usage_days']; // usage_days is now a string (e.g., "Monday")
+            $day = $appliance['usage_days']; 
 
             if (!isset($predictionsByDay[$day])) {
                 \Log::warning('No predictions for day:', ['day' => $day]);
@@ -263,7 +263,7 @@ class ScheduleController extends Controller
                 }
             }
 
-            // If no window is available within the preferred range, try to assign outside the preferred range
+            // If no window is available within the preferred range assign outside the preferred range
             if (!$assigned) {
                 \Log::info('No available windows within preferred range for appliance:', [
                     'appliance_id' => $appliance['id'],

@@ -25,7 +25,7 @@ data['Day'] = data['Start date/time'].dt.day
 data['Hour'] = data['Start date/time'].dt.hour
 data['DayOfWeek'] = data['Start date/time'].dt.dayofweek
 
-# Create lagged features for target variable
+# lagged features for target variable
 data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
 
 # Add rolling averages for features
@@ -59,7 +59,7 @@ y = data[target]
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
-# TimeSeriesSplit for cross-validation
+# TimeSeriesSplit for crossvalidation
 tscv = TimeSeriesSplit(n_splits=5)
 
 # Define the objective function for Optuna
@@ -98,7 +98,7 @@ def objective(trial):
 
     return np.mean(scores)
 
-# Run Bayesian Optimization with Optuna
+# Bayesian Optimization with Optuna
 study = optuna.create_study(direction='minimize', sampler=TPESampler(seed=42))
 study.optimize(objective, n_trials=50)
 
@@ -140,7 +140,6 @@ plt.title('Feature Importance')
 plt.show()
 
 # Predict for the coming week
-# Assuming 'data' contains the latest available data
 last_date = data['Start date/time'].max()
 future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='h')  # Use 'h' instead of 'H'
 
@@ -155,7 +154,7 @@ future_data['DayOfWeek'] = future_data.index.dayofweek  # Add day of the week
 # Initialize Lag_Price with the last observed price
 future_data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
 
-# Step 1: Forecast weather data (temperature and wind speed) using Prophet
+#Forecast weather data (temperature and wind speed) using Prophet
 def forecast_feature(data, feature, periods=7*24):
     # Prepare data for Prophet
     feature_data = data[['Start date/time', feature]].rename(
@@ -176,7 +175,7 @@ def forecast_feature(data, feature, periods=7*24):
 future_data['temperature_2m (°C)'] = forecast_feature(data, 'temperature_2m (°C)')
 future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)')
 
-# Step 2: Forecast grid load using Prophet
+# Forecast grid cons using Prophet
 future_data['Total (grid consumption) [MWh]'] = forecast_feature(data, 'Total (grid consumption) [MWh]')
 
 # Add rolling averages for future data
@@ -184,7 +183,7 @@ future_data['Rolling_Temp_24h'] = future_data['temperature_2m (°C)'].rolling(wi
 future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(window=24).mean()
 future_data['Rolling_Load_24h'] = future_data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
 
-# Fill NaN values in rolling averages (first 23 rows)
+# Fill NaN values in rolling averages 
 future_data.fillna(method='bfill', inplace=True)
 
 # Iteratively predict future prices
@@ -203,8 +202,8 @@ for i in range(len(future_data)):
 
 # Create a DataFrame for the predictions
 future_predictions_df = pd.DataFrame({
-    'Start date/time': future_dates,  # The future dates generated earlier
-    'Predicted Price [Euro/MWh]': xgb_future_pred  # The predicted prices
+    'Start date/time': future_dates,  
+    'Predicted Price [Euro/MWh]': xgb_future_pred  
 })
 
 # Print the predictions with dates
