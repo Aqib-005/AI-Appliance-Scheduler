@@ -21,4 +21,5 @@ TODO:
    a1. need to fix edit applaince button ✔️
    1a1. validate edit/add inputs ❌
    b. Scheduler
+   Need to ensure that the user can hard select applonace for a set time
    c. View Schedule/DashBoard
