@@ -36,11 +36,18 @@ data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window
 # Drop rows with missing values after lagging and rolling
 data = data.dropna()
 
+# Rename features to remove special characters
+data = data.rename(columns={
+    'temperature_2m (°C)': 'temperature_2m_C',
+    'wind_speed_100m (km/h)': 'wind_speed_100m_kmh',
+    'Total (grid consumption) [MWh]': 'Total_grid_consumption_MWh'
+})
+
 # Feature selection for XGBoost
 features = [
-    'temperature_2m (°C)', 
-    'wind_speed_100m (km/h)', 
-    'Total (grid consumption) [MWh]', 
+    'temperature_2m_C', 
+    'wind_speed_100m_kmh', 
+    'Total_grid_consumption_MWh', 
     'Day', 
     'Hour', 
     'DayOfWeek',
@@ -142,7 +149,7 @@ plt.show()
 # Hybrid Model: Prophet + XGBoost ---------------------------------------------
 
 # 1. Prophet Model for Trend and Seasonality
-prophet_df = data[['Start date/time', 'Price Germany/Luxembourg [Euro/MWh]', 'temperature_2m (°C)', 'Total (grid consumption) [MWh]', 'wind_speed_100m (km/h)']].rename(
+prophet_df = data[['Start date/time', 'Price Germany/Luxembourg [Euro/MWh]', 'temperature_2m_C', 'Total_grid_consumption_MWh', 'wind_speed_100m_kmh']].rename(
     columns={'Start date/time': 'ds', 'Price Germany/Luxembourg [Euro/MWh]': 'y'}
 )
 
@@ -157,9 +164,9 @@ m = Prophet(
     interval_width=0.95
 )
 m.add_country_holidays(country_name='DE')
-m.add_regressor('temperature_2m (°C)')
-m.add_regressor('Total (grid consumption) [MWh]')
-m.add_regressor('wind_speed_100m (km/h)')
+m.add_regressor('temperature_2m_C')
+m.add_regressor('Total_grid_consumption_MWh')
+m.add_regressor('wind_speed_100m_kmh')
 m.fit(prophet_df)
 
 # Generate trend predictions
@@ -181,9 +188,9 @@ def forecast_external_regressors(data, target_col, features, periods=168):
     })
     return model.predict(future_X)
 
-future['temperature_2m (°C)'] = forecast_external_regressors(data, 'temperature_2m (°C)', features)
-future['Total (grid consumption) [MWh]'] = forecast_external_regressors(data, 'Total (grid consumption) [MWh]', features)
-future['wind_speed_100m (km/h)'] = forecast_external_regressors(data, 'wind_speed_100m (km/h)', features)
+future['temperature_2m_C'] = forecast_external_regressors(data, 'temperature_2m_C', features)
+future['Total_grid_consumption_MWh'] = forecast_external_regressors(data, 'Total_grid_consumption_MWh', features)
+future['wind_speed_100m_kmh'] = forecast_external_regressors(data, 'wind_speed_100m_kmh', features)
 
 # Generate Prophet forecast
 forecast = m.predict(future)
@@ -196,9 +203,9 @@ data['residuals'] = data['residuals'].fillna(0).replace([np.inf, -np.inf], 0)
 
 # Feature Engineering for Residual Model
 residual_features = [
-    'temperature_2m (°C)', 
-    'wind_speed_100m (km/h)', 
-    'Total (grid consumption) [MWh]', 
+    'temperature_2m_C', 
+    'wind_speed_100m_kmh', 
+    'Total_grid_consumption_MWh', 
     'Day', 
     'Hour', 
     'DayOfWeek',
@@ -242,9 +249,9 @@ def create_future_features(last_date, periods=168):
     future_df = pd.DataFrame({'ds': future_dates})
     
     # Add external regressors (use the last available values)
-    future_df['temperature_2m (°C)'] = forecast_external_regressors(data, 'temperature_2m (°C)', features, periods)
-    future_df['Total (grid consumption) [MWh]'] = forecast_external_regressors(data, 'Total (grid consumption) [MWh]', features, periods)
-    future_df['wind_speed_100m (km/h)'] = forecast_external_regressors(data, 'wind_speed_100m (km/h)', features, periods)
+    future_df['temperature_2m_C'] = forecast_external_regressors(data, 'temperature_2m_C', features, periods)
+    future_df['Total_grid_consumption_MWh'] = forecast_external_regressors(data, 'Total_grid_consumption_MWh', features, periods)
+    future_df['wind_speed_100m_kmh'] = forecast_external_regressors(data, 'wind_speed_100m_kmh', features, periods)
     
     # Use Prophet forecast
     prophet_forecast = m.predict(future_df)
