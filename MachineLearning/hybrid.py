@@ -100,7 +100,7 @@ def objective(trial):
 
 # Run Bayesian Optimization with Optuna
 study = optuna.create_study(direction='minimize', sampler=TPESampler(seed=42))
-study.optimize(objective, n_trials=50)
+study.optimize(objective, n_trials=100)
 
 # Get the best parameters
 best_params = study.best_params
@@ -166,13 +166,24 @@ m.fit(prophet_df)
 future = m.make_future_dataframe(periods=168, freq='h')
 
 # Add external regressors to the future DataFrame
-# Fill historical values with actual data and future values with the last known value
-future = future.merge(prophet_df[['ds', 'temperature_2m (°C)', 'Total (grid consumption) [MWh]', 'wind_speed_100m (km/h)']], on='ds', how='left')
+# Train separate models to forecast external regressors
+def forecast_external_regressors(data, target_col, features, periods=168):
+    model = xgb.XGBRegressor(**best_params, random_state=42)
+    X = data[features]
+    y = data[target_col]
+    model.fit(X, y)
+    future_X = pd.DataFrame({
+        'Hour': np.arange(24).repeat(periods // 24 + 1)[:periods],
+        'DayOfWeek': np.arange(7).repeat(periods // 7 + 1)[:periods],
+        'Rolling_Temp_24h': data['Rolling_Temp_24h'].iloc[-1],
+        'Rolling_Wind_24h': data['Rolling_Wind_24h'].iloc[-1],
+        'Rolling_Load_24h': data['Rolling_Load_24h'].iloc[-1]
+    })
+    return model.predict(future_X)
 
-# Forward-fill NaN values in the future period
-future['temperature_2m (°C)'] = future['temperature_2m (°C)'].ffill()
-future['Total (grid consumption) [MWh]'] = future['Total (grid consumption) [MWh]'].ffill()
-future['wind_speed_100m (km/h)'] = future['wind_speed_100m (km/h)'].ffill()
+future['temperature_2m (°C)'] = forecast_external_regressors(data, 'temperature_2m (°C)', features)
+future['Total (grid consumption) [MWh]'] = forecast_external_regressors(data, 'Total (grid consumption) [MWh]', features)
+future['wind_speed_100m (km/h)'] = forecast_external_regressors(data, 'wind_speed_100m (km/h)', features)
 
 # Generate Prophet forecast
 forecast = m.predict(future)
@@ -231,9 +242,9 @@ def create_future_features(last_date, periods=168):
     future_df = pd.DataFrame({'ds': future_dates})
     
     # Add external regressors (use the last available values)
-    future_df['temperature_2m (°C)'] = data['temperature_2m (°C)'].ffill().values[-periods:]
-    future_df['Total (grid consumption) [MWh]'] = data['Total (grid consumption) [MWh]'].ffill().values[-periods:]
-    future_df['wind_speed_100m (km/h)'] = data['wind_speed_100m (km/h)'].ffill().values[-periods:]
+    future_df['temperature_2m (°C)'] = forecast_external_regressors(data, 'temperature_2m (°C)', features, periods)
+    future_df['Total (grid consumption) [MWh]'] = forecast_external_regressors(data, 'Total (grid consumption) [MWh]', features, periods)
+    future_df['wind_speed_100m (km/h)'] = forecast_external_regressors(data, 'wind_speed_100m (km/h)', features, periods)
     
     # Use Prophet forecast
     prophet_forecast = m.predict(future_df)
@@ -273,10 +284,6 @@ future_df['final_price'] = future_df['prophet_trend'] + future_df['xgb_residual'
 # Post-processing
 future_df['final_price'] = np.where(future_df['final_price'] < 0, 0, future_df['final_price'])
 future_df['final_price'] = future_df['final_price'].rolling(3, center=True).mean()
-
-# Print future predictions
-print("Predictions for the coming week:")
-print(future_df[['ds', 'final_price']])
 
 # Print future predictions
 print("Predictions for the coming week:")
