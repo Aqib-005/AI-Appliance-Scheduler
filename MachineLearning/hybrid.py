@@ -179,18 +179,28 @@ def forecast_external_regressors(data, target_col, features, periods=168):
     X = data[features]
     y = data[target_col]
     model.fit(X, y)
+    
+    # Create future_X with all features used during training
     future_X = pd.DataFrame({
-        'Hour': np.arange(24).repeat(periods // 24 + 1)[:periods],
-        'DayOfWeek': np.arange(7).repeat(periods // 7 + 1)[:periods],
-        'Rolling_Temp_24h': data['Rolling_Temp_24h'].iloc[-1],
-        'Rolling_Wind_24h': data['Rolling_Wind_24h'].iloc[-1],
-        'Rolling_Load_24h': data['Rolling_Load_24h'].iloc[-1]
+        'temperature_2m_C': np.full(periods, data['temperature_2m_C'].iloc[-1]),
+        'wind_speed_100m_kmh': np.full(periods, data['wind_speed_100m_kmh'].iloc[-1]),
+        'Total_grid_consumption_MWh': np.full(periods, data['Total_grid_consumption_MWh'].iloc[-1]),
+        'Day': [(data['Start date/time'].iloc[-1] + pd.Timedelta(hours=h)).day for h in range(1, periods+1)],
+        'Hour': [(data['Start date/time'].iloc[-1] + pd.Timedelta(hours=h)).hour for h in range(1, periods+1)],
+        'DayOfWeek': [(data['Start date/time'].iloc[-1] + pd.Timedelta(hours=h)).dayofweek for h in range(1, periods+1)],
+        'Rolling_Temp_24h': np.full(periods, data['Rolling_Temp_24h'].iloc[-1]),
+        'Rolling_Wind_24h': np.full(periods, data['Rolling_Wind_24h'].iloc[-1]),
+        'Rolling_Load_24h': np.full(periods, data['Rolling_Load_24h'].iloc[-1]),
+        'Lag_Price': np.full(periods, data['Lag_Price'].iloc[-1])
     })
+    
     return model.predict(future_X)
 
-future['temperature_2m_C'] = forecast_external_regressors(data, 'temperature_2m_C', features)
-future['Total_grid_consumption_MWh'] = forecast_external_regressors(data, 'Total_grid_consumption_MWh', features)
-future['wind_speed_100m_kmh'] = forecast_external_regressors(data, 'wind_speed_100m_kmh', features)
+# Only assign forecasts to the future period (last 168 hours)
+future_start = len(data)
+future.loc[future_start:, 'temperature_2m_C'] = forecast_external_regressors(data, 'temperature_2m_C', features)
+future.loc[future_start:, 'Total_grid_consumption_MWh'] = forecast_external_regressors(data, 'Total_grid_consumption_MWh', features)
+future.loc[future_start:, 'wind_speed_100m_kmh'] = forecast_external_regressors(data, 'wind_speed_100m_kmh', features)
 
 # Generate Prophet forecast
 forecast = m.predict(future)
@@ -248,7 +258,7 @@ def create_future_features(last_date, periods=168):
     future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=periods, freq='h')
     future_df = pd.DataFrame({'ds': future_dates})
     
-    # Add external regressors (use the last available values)
+    # Add external regressors
     future_df['temperature_2m_C'] = forecast_external_regressors(data, 'temperature_2m_C', features, periods)
     future_df['Total_grid_consumption_MWh'] = forecast_external_regressors(data, 'Total_grid_consumption_MWh', features, periods)
     future_df['wind_speed_100m_kmh'] = forecast_external_regressors(data, 'wind_speed_100m_kmh', features, periods)
@@ -267,7 +277,7 @@ def create_future_features(last_date, periods=168):
     future_df['Day'] = future_df['ds'].dt.day
     future_df['DayOfWeek'] = future_df['ds'].dt.dayofweek
     
-    # Add rolling features (using last known values)
+    # Add rolling features
     future_df['Rolling_Temp_24h'] = data['Rolling_Temp_24h'].iloc[-1]
     future_df['Rolling_Wind_24h'] = data['Rolling_Wind_24h'].iloc[-1]
     future_df['Rolling_Load_24h'] = data['Rolling_Load_24h'].iloc[-1]
@@ -381,41 +391,44 @@ actual_data = pd.DataFrame({
 actual_data['Start date/time'] = pd.to_datetime(actual_data['Start date/time'])
 
 # Merge predictions and actual data
-comparison_df = pd.merge(future_df[['ds', 'final_price']], actual_data, left_on='ds', right_on='Start date/time', suffixes=('_predicted', '_actual'))
+comparison_df = pd.merge(future_df[['ds', 'final_price']], actual_data, left_on='ds', right_on='Start date/time', how='left')
 
 # Handle NaN values in comparison_df
 comparison_df = comparison_df.dropna(subset=['Actual Price [Euro/MWh]', 'final_price'])
 
 # Calculate evaluation metrics
-mse = mean_squared_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['final_price'])
-mae = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['final_price'])
-r2 = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['final_price'])
-rmse = np.sqrt(mse)
+if not comparison_df.empty:
+    mse = mean_squared_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['final_price'])
+    mae = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['final_price'])
+    r2 = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['final_price'])
+    rmse = np.sqrt(mse)
 
-print("Hybrid Model Evaluation Metrics:")
-print(f"Mean Squared Error: {mse:.4f}")
-print(f"Mean Absolute Error: {mae:.4f}")
-print(f"R-squared: {r2:.4f}")
-print(f"Root Mean Squared Error: {rmse:.4f}")
+    print("Hybrid Model Evaluation Metrics:")
+    print(f"Mean Squared Error: {mse:.4f}")
+    print(f"Mean Absolute Error: {mae:.4f}")
+    print(f"R-squared: {r2:.4f}")
+    print(f"Root Mean Squared Error: {rmse:.4f}")
 
-# Plot predicted vs actual prices
-plt.figure(figsize=(12, 6))
-plt.plot(comparison_df['ds'], comparison_df['final_price'], label='Predicted', marker='o')
-plt.plot(comparison_df['ds'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
-plt.title('Hybrid Model: Predicted vs Actual Hourly Prices')
-plt.xlabel('Date/Time')
-plt.ylabel('Price [Euro/MWh]')
-plt.legend()
-plt.grid(True)
-plt.show()
+    # Plot predicted vs actual prices
+    plt.figure(figsize=(12, 6))
+    plt.plot(comparison_df['ds'], comparison_df['final_price'], label='Predicted', marker='o')
+    plt.plot(comparison_df['ds'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
+    plt.title('Hybrid Model: Predicted vs Actual Hourly Prices')
+    plt.xlabel('Date/Time')
+    plt.ylabel('Price [Euro/MWh]')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 
-# Plot residuals
-comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['final_price']
-plt.figure(figsize=(12, 6))
-plt.plot(comparison_df['ds'], comparison_df['Residuals'], marker='o', color='red')
-plt.axhline(0, color='black', linestyle='--')
-plt.title('Hybrid Model: Residuals (Actual - Predicted)')
-plt.xlabel('Date/Time')
-plt.ylabel('Residuals [Euro/MWh]')
-plt.grid(True)
-plt.show()
+    # Plot residuals
+    comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['final_price']
+    plt.figure(figsize=(12, 6))
+    plt.plot(comparison_df['ds'], comparison_df['Residuals'], marker='o', color='red')
+    plt.axhline(0, color='black', linestyle='--')
+    plt.title('Hybrid Model: Residuals (Actual - Predicted)')
+    plt.xlabel('Date/Time')
+    plt.ylabel('Residuals [Euro/MWh]')
+    plt.grid(True)
+    plt.show()
+else:
+    print("No overlapping data for comparison")
