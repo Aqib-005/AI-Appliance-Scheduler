@@ -149,11 +149,13 @@ plt.show()
 # Hybrid Model: Prophet + XGBoost ---------------------------------------------
 
 # 1. Prophet Model for Trend and Seasonality
-prophet_df = data[['Start date/time', 'Price Germany/Luxembourg [Euro/MWh]', 'temperature_2m_C', 'Total_grid_consumption_MWh', 'wind_speed_100m_kmh']].rename(
-    columns={'Start date/time': 'ds', 'Price Germany/Luxembourg [Euro/MWh]': 'y'}
+prophet_df = data.rename(columns={'Start date/time': 'ds'})[['ds', 'Price Germany/Luxembourg [Euro/MWh]', 
+                  'temperature_2m_C', 'Total_grid_consumption_MWh', 
+                  'wind_speed_100m_kmh']].rename(
+    columns={'Price Germany/Luxembourg [Euro/MWh]': 'y'}
 )
 
-# Configure Prophet with custom parameters and external regressors
+# Configure Prophet
 m = Prophet(
     yearly_seasonality=True,
     weekly_seasonality=True,
@@ -167,44 +169,43 @@ m.add_country_holidays(country_name='DE')
 m.add_regressor('temperature_2m_C')
 m.add_regressor('Total_grid_consumption_MWh')
 m.add_regressor('wind_speed_100m_kmh')
+
+# Fit Prophet model
 m.fit(prophet_df)
 
-# Generate trend predictions
+# Generate future dataframe (FIX 1: Use 'h' instead of 'H')
 future = m.make_future_dataframe(periods=168, freq='h')
 
-# Add external regressors to the future DataFrame
-# Train separate models to forecast external regressors
-def forecast_external_regressors(data, target_col, features, periods=168):
-    model = xgb.XGBRegressor(**best_params, random_state=42)
-    X = data[features]
-    y = data[target_col]
-    model.fit(X, y)
-    
-    # Create future_X with all features used during training
-    future_X = pd.DataFrame({
-        'temperature_2m_C': np.full(periods, data['temperature_2m_C'].iloc[-1]),
-        'wind_speed_100m_kmh': np.full(periods, data['wind_speed_100m_kmh'].iloc[-1]),
-        'Total_grid_consumption_MWh': np.full(periods, data['Total_grid_consumption_MWh'].iloc[-1]),
-        'Day': [(data['Start date/time'].iloc[-1] + pd.Timedelta(hours=h)).day for h in range(1, periods+1)],
-        'Hour': [(data['Start date/time'].iloc[-1] + pd.Timedelta(hours=h)).hour for h in range(1, periods+1)],
-        'DayOfWeek': [(data['Start date/time'].iloc[-1] + pd.Timedelta(hours=h)).dayofweek for h in range(1, periods+1)],
-        'Rolling_Temp_24h': np.full(periods, data['Rolling_Temp_24h'].iloc[-1]),
-        'Rolling_Wind_24h': np.full(periods, data['Rolling_Wind_24h'].iloc[-1]),
-        'Rolling_Load_24h': np.full(periods, data['Rolling_Load_24h'].iloc[-1]),
-        'Lag_Price': np.full(periods, data['Lag_Price'].iloc[-1])
-    })
-    
-    return model.predict(future_X)
+# Merge regressors using original datetime column (FIX 2: Correct column reference)
+future = future.merge(
+    data[['Start date/time', 'temperature_2m_C', 'Total_grid_consumption_MWh', 'wind_speed_100m_kmh']].rename(
+        columns={'Start date/time': 'ds'}
+    ),
+    on='ds',
+    how='left'
+)
 
-# Only assign forecasts to the future period (last 168 hours)
-future_start = len(data)
-future.loc[future_start:, 'temperature_2m_C'] = forecast_external_regressors(data, 'temperature_2m_C', features)
-future.loc[future_start:, 'Total_grid_consumption_MWh'] = forecast_external_regressors(data, 'Total_grid_consumption_MWh', features)
-future.loc[future_start:, 'wind_speed_100m_kmh'] = forecast_external_regressors(data, 'wind_speed_100m_kmh', features)
+# Forward-fill missing regressor values
+for col in ['temperature_2m_C', 'Total_grid_consumption_MWh', 'wind_speed_100m_kmh']:
+    future[col] = future[col].fillna(method='ffill')
 
 # Generate Prophet forecast
 forecast = m.predict(future)
-data = data.merge(forecast[['ds', 'trend', 'yhat']], left_on='Start date/time', right_on='ds')
+
+# Merge Prophet results into future_df and RENAME 'trend' to 'prophet_trend'
+future_df = future.merge(
+    forecast[['ds', 'trend']], 
+    on='ds',
+    how='left'
+).rename(columns={'trend': 'prophet_trend'})  # Critical fix here
+
+# Merge Prophet results back to main dataframe
+data = data.merge(
+    forecast[['ds', 'trend', 'yhat']], 
+    left_on='Start date/time', 
+    right_on='ds',
+    how='left'
+)
 data.rename(columns={'trend': 'prophet_trend', 'yhat': 'prophet_prediction'}, inplace=True)
 
 # 2. Residual Calculation
@@ -253,40 +254,41 @@ print(f"MAE: {mae_hybrid}")
 print(f"R²: {r2_hybrid}")
 
 # Future Predictions ----------------------------------------------------------
-def create_future_features(last_date, periods=168):
-    """Create future features for forecasting with proper lag handling"""
-    future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=periods, freq='h')
+def create_future_features(last_date, data, periods=168):
+    """Create future features for forecasting with proper regressor handling"""
+    future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=periods, freq='H')
     future_df = pd.DataFrame({'ds': future_dates})
     
-    # Add external regressors
-    future_df['temperature_2m_C'] = forecast_external_regressors(data, 'temperature_2m_C', features, periods)
-    future_df['Total_grid_consumption_MWh'] = forecast_external_regressors(data, 'Total_grid_consumption_MWh', features, periods)
-    future_df['wind_speed_100m_kmh'] = forecast_external_regressors(data, 'wind_speed_100m_kmh', features, periods)
+    # Carry forward the last known values of regressors
+    last_values = data[['temperature_2m_C', 'Total_grid_consumption_MWh', 
+                       'wind_speed_100m_kmh']].iloc[-1]
     
-    # Use Prophet forecast
+    for col in ['temperature_2m_C', 'Total_grid_consumption_MWh', 'wind_speed_100m_kmh']:
+        future_df[col] = last_values[col]
+    
+    # Generate Prophet forecast for future dates
     prophet_forecast = m.predict(future_df)
     
-    # Initialize lagged price with the last known value
-    future_df['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
-    
-    # Include Prophet trend
-    future_df['prophet_trend'] = prophet_forecast['trend']
+    # Merge Prophet components
+    future_df = future_df.merge(prophet_forecast[['ds', 'trend']], on='ds')
     
     # Add time features
     future_df['Hour'] = future_df['ds'].dt.hour
     future_df['Day'] = future_df['ds'].dt.day
     future_df['DayOfWeek'] = future_df['ds'].dt.dayofweek
     
-    # Add rolling features
-    future_df['Rolling_Temp_24h'] = data['Rolling_Temp_24h'].iloc[-1]
-    future_df['Rolling_Wind_24h'] = data['Rolling_Wind_24h'].iloc[-1]
-    future_df['Rolling_Load_24h'] = data['Rolling_Load_24h'].iloc[-1]
+    # Add rolling features (carry forward last known values)
+    for col in ['Rolling_Temp_24h', 'Rolling_Wind_24h', 'Rolling_Load_24h']:
+        future_df[col] = data[col].iloc[-1]
+    
+    # Initialize lagged price with the last known value
+    future_df['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
     
     return future_df
 
 # Generate future predictions
 last_date = data['Start date/time'].max()
-future_df = create_future_features(last_date)
+future_df = create_future_features(last_date, data)
 
 # Ensure all features are present
 missing_features = [feature for feature in residual_features if feature not in future_df.columns]
@@ -296,7 +298,7 @@ if missing_features:
 # Scale and predict
 future_X_residual = scaler_residual.transform(future_df[residual_features])
 future_df['xgb_residual'] = best_xgb_residual.predict(future_X_residual)
-future_df['final_price'] = future_df['prophet_trend'] + future_df['xgb_residual']
+future_df['final_price'] = future_df['trend'] + future_df['xgb_residual']
 
 # Post-processing
 future_df['final_price'] = np.where(future_df['final_price'] < 0, 0, future_df['final_price'])
