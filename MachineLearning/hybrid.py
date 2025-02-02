@@ -8,7 +8,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 import xgboost as xgb
-import lightgbm as lgb  # Ensure installation with: pip install lightgbm
+import lightgbm as lgb  # pip install lightgbm if needed
 from prophet import Prophet
 import optuna
 from optuna.samplers import TPESampler
@@ -18,7 +18,7 @@ from optuna.samplers import TPESampler
 # -----------------------
 data = pd.read_csv("data/merged-data.csv")
 
-# Clean numeric fields (remove commas, convert to float)
+# Clean numeric fields
 data['Price Germany/Luxembourg [Euro/MWh]'] = data['Price Germany/Luxembourg [Euro/MWh]']\
     .replace({',': ''}, regex=True).astype(float)
 data['Total (grid consumption) [MWh]'] = data['Total (grid consumption) [MWh]']\
@@ -34,28 +34,25 @@ data['DayOfWeek'] = data['Start date/time'].dt.dayofweek
 
 # Create a holiday flag for Germany
 de_holidays = holidays.CountryHoliday('DE')
-# Specify datetime64[ns] to avoid precision warning
 data['is_holiday'] = data['Start date/time'].dt.date.astype('datetime64[ns]')\
     .isin(list(de_holidays.keys())).astype(int)
 
-# Create lag features for price and load
+# Create lag features
 data['Lag_Price_1'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
 data['Lag_Price_24'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(24)
 data['Lag_Load_1'] = data['Total (grid consumption) [MWh]'].shift(1)
 data['Lag_Load_24'] = data['Total (grid consumption) [MWh]'].shift(24)
 
-# Create rolling averages (window=24 hours)
+# Create rolling averages (24-hour windows)
 data['Rolling_Price_24h'] = data['Price Germany/Luxembourg [Euro/MWh]'].rolling(window=24).mean()
 data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
-
-# Rolling averages for weather features
 data['Rolling_Temp_24h'] = data['temperature_2m (°C)'].rolling(window=24).mean()
 data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(window=24).mean()
 
 # Drop initial rows with missing values from lagging/rolling
 data = data.dropna().reset_index(drop=True)
 
-# Rename columns to simpler names
+# Rename columns for convenience
 data.rename(columns={
     'temperature_2m (°C)': 'temperature_2m_C',
     'wind_speed_100m (km/h)': 'wind_speed_100m_kmh',
@@ -63,21 +60,23 @@ data.rename(columns={
 }, inplace=True)
 
 # -----------------------
-# 2. Prophet Model for Trend & Seasonality
+# 2. Prophet Model for Trend & Seasonality (Improved)
 # -----------------------
-# Prepare dataframe for Prophet: include external regressors
+# Prepare dataframe for Prophet (include regressors)
 prophet_df = data[['Start date/time', 'Price Germany/Luxembourg [Euro/MWh]', 
                    'temperature_2m_C', 'Total_grid_consumption_MWh', 
                    'wind_speed_100m_kmh', 'is_holiday']].copy()
 prophet_df.rename(columns={'Start date/time': 'ds',
                            'Price Germany/Luxembourg [Euro/MWh]': 'y'}, inplace=True)
 
-# Configure Prophet with external regressors and holidays
+# Configure Prophet with improved settings:
+# - Enable daily seasonality
+# - Increase changepoint_prior_scale for more flexibility
 m = Prophet(
     yearly_seasonality=True,
     weekly_seasonality=True,
-    daily_seasonality=False,  # hourly effects captured via regressors and time features
-    changepoint_prior_scale=0.05,  # increased for flexibility
+    daily_seasonality=True,         # Enable daily seasonality for hourly data
+    changepoint_prior_scale=0.1,      # Increase flexibility
     seasonality_mode='multiplicative',
     interval_width=0.95
 )
@@ -87,28 +86,33 @@ m.add_regressor('Total_grid_consumption_MWh')
 m.add_regressor('wind_speed_100m_kmh')
 m.add_regressor('is_holiday')
 
-# Fit Prophet model (this may take a minute)
+# Optionally, add custom seasonality (e.g., an 8-hour cycle)
+m.add_seasonality(name='8hour', period=8, fourier_order=3)
+
+# Fit Prophet
 m.fit(prophet_df)
 
-# Create future dataframe (using freq='h')
-future = m.make_future_dataframe(periods=168, freq='h')
+# To ensure that our forecast dates match the actual data period,
+# suppose our actual data covers October 1 to October 7, 2024.
+forecast_start = pd.to_datetime("2024-10-01 00:00:00")
+forecast_end   = pd.to_datetime("2024-10-07 23:00:00")
+forecast_dates = pd.date_range(start=forecast_start, end=forecast_end, freq='h')
 
-# Merge regressors from the most recent data (use .ffill() instead of fillna(method=...))
+future = pd.DataFrame({'ds': forecast_dates})
+# Merge the latest available regressor values (or use forecasts if available)
 latest_regressors = data[['Start date/time', 'temperature_2m_C', 'Total_grid_consumption_MWh', 
-                          'wind_speed_100m_kmh', 'is_holiday']].rename(columns={'Start date/time': 'ds'})
-future = future.merge(latest_regressors, on='ds', how='left')
+                          'wind_speed_100m_kmh', 'is_holiday']].iloc[-1]
 for col in ['temperature_2m_C', 'Total_grid_consumption_MWh', 'wind_speed_100m_kmh', 'is_holiday']:
-    future[col] = future[col].ffill()
+    future[col] = latest_regressors[col]
 
-# Generate forecast
+# Generate Prophet forecast for the specified period
 forecast = m.predict(future)
+# We'll use the trend component (or yhat if you prefer)
+forecast = forecast[['ds', 'trend']].rename(columns={'trend': 'prophet_trend'})
 
-# Merge Prophet trend into our data (rename to prophet_trend)
-# Make a copy to avoid SettingWithCopyWarning
-prophet_forecast = forecast[['ds', 'trend', 'yhat']].copy()
-prophet_forecast.rename(columns={'trend': 'prophet_trend'}, inplace=True)
-data = data.merge(prophet_forecast, left_on='Start date/time', right_on='ds', how='left')
-data.rename(columns={'yhat': 'prophet_prediction'}, inplace=True)
+# Merge Prophet forecast back into our dataset (if needed)
+data = data.merge(forecast, left_on='Start date/time', right_on='ds', how='left')
+data['prophet_prediction'] = data['prophet_trend']  # For simplicity in this hybrid
 
 # -----------------------
 # 3. Residual Modeling (Stacked Ensemble)
@@ -117,7 +121,7 @@ data.rename(columns={'yhat': 'prophet_prediction'}, inplace=True)
 data['residuals'] = data['Price Germany/Luxembourg [Euro/MWh]'] - data['prophet_prediction']
 data['residuals'] = data['residuals'].fillna(0).replace([np.inf, -np.inf], 0)
 
-# Build features for the residual model
+# Build features for residual model
 residual_features = [
     'temperature_2m_C',
     'wind_speed_100m_kmh',
@@ -137,16 +141,12 @@ residual_features = [
 X_residual = data[residual_features]
 y_residual = data['residuals']
 
-# Normalize features
 scaler_residual = StandardScaler()
 X_residual_scaled = scaler_residual.fit_transform(X_residual)
 
-# Prepare a time series split
 tscv = TimeSeriesSplit(n_splits=5)
 
-# -----------------------
-# 3a. Tuning and training XGBoost on residuals
-# -----------------------
+# --- 3a. Tune and Train XGBoost for Residuals ---
 def objective_xgb(trial):
     params = {
         'n_estimators': trial.suggest_int('n_estimators', 50, 300),
@@ -166,7 +166,6 @@ def objective_xgb(trial):
         X_train, X_val = X_residual_scaled[train_idx], X_residual_scaled[val_idx]
         y_train, y_val = y_residual.iloc[train_idx], y_residual.iloc[val_idx]
         model = xgb.XGBRegressor(**params)
-        # Removed early_stopping_rounds for compatibility
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
         pred = model.predict(X_val)
         errors.append(mean_squared_error(y_val, pred))
@@ -176,13 +175,10 @@ study_xgb = optuna.create_study(direction='minimize', sampler=TPESampler(seed=42
 study_xgb.optimize(objective_xgb, n_trials=50)
 best_params_xgb = study_xgb.best_params
 
-# Train final XGB residual model
 best_xgb_res = xgb.XGBRegressor(**best_params_xgb, random_state=42)
 best_xgb_res.fit(X_residual_scaled, y_residual)
 
-# -----------------------
-# 3b. Tuning and training LightGBM on residuals
-# -----------------------
+# --- 3b. Tune and Train LightGBM for Residuals ---
 def objective_lgb(trial):
     params = {
         'n_estimators': trial.suggest_int('n_estimators', 50, 300),
@@ -199,7 +195,6 @@ def objective_lgb(trial):
         X_train, X_val = X_residual_scaled[train_idx], X_residual_scaled[val_idx]
         y_train, y_val = y_residual.iloc[train_idx], y_residual.iloc[val_idx]
         model = lgb.LGBMRegressor(**params)
-        # Remove verbose keyword since it's not accepted; you can set verbose_eval=0 in parameters if needed.
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
         pred = model.predict(X_val)
         errors.append(mean_squared_error(y_val, pred))
@@ -209,13 +204,10 @@ study_lgb = optuna.create_study(direction='minimize', sampler=TPESampler(seed=42
 study_lgb.optimize(objective_lgb, n_trials=50)
 best_params_lgb = study_lgb.best_params
 
-# Train final LGBM residual model
 best_lgb_res = lgb.LGBMRegressor(**best_params_lgb, random_state=42)
 best_lgb_res.fit(X_residual_scaled, y_residual)
 
-# -----------------------
-# 3c. Ensemble the residual predictions (simple average)
-# -----------------------
+# --- 3c. Ensemble residual predictions ---
 data['xgb_res_pred'] = best_xgb_res.predict(X_residual_scaled)
 data['lgb_res_pred'] = best_lgb_res.predict(X_residual_scaled)
 data['ensemble_res_pred'] = (data['xgb_res_pred'] + data['lgb_res_pred']) / 2
@@ -223,10 +215,8 @@ data['ensemble_res_pred'] = (data['xgb_res_pred'] + data['lgb_res_pred']) / 2
 # -----------------------
 # 4. Final Hybrid Prediction
 # -----------------------
-# The final prediction is Prophet’s prediction plus the ensemble residual.
 data['hybrid_prediction'] = data['prophet_prediction'] + data['ensemble_res_pred']
 
-# Evaluate on historical data
 rmse = np.sqrt(mean_squared_error(data['Price Germany/Luxembourg [Euro/MWh]'], data['hybrid_prediction']))
 mae = mean_absolute_error(data['Price Germany/Luxembourg [Euro/MWh]'], data['hybrid_prediction'])
 r2 = r2_score(data['Price Germany/Luxembourg [Euro/MWh]'], data['hybrid_prediction'])
@@ -236,9 +226,9 @@ print(f"RMSE: {rmse:.4f}")
 print(f"MAE: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
 
-# Plot Feature Importance for the XGB residual model
-importances = best_xgb_res.feature_importances_
-feat_imp = pd.DataFrame({'Feature': residual_features, 'Importance': importances})
+# Plot feature importance (XGB)
+feat_imp = pd.DataFrame({'Feature': residual_features, 
+                         'Importance': best_xgb_res.feature_importances_})
 feat_imp = feat_imp.sort_values(by='Importance', ascending=False)
 plt.figure(figsize=(10,6))
 plt.barh(feat_imp['Feature'], feat_imp['Importance'])
@@ -249,81 +239,58 @@ plt.show()
 # -----------------------
 # 5. Future Predictions
 # -----------------------
-def create_future_features(last_date, data, periods=168):
-    """Create features for future predictions with external regressors and Prophet trend."""
-    # Use lowercase 'h' for hourly frequency
-    future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=periods, freq='h')
-    future_df = pd.DataFrame({'ds': future_dates})
-    
-    # Carry forward the last known regressor values (or replace with forecasted values)
+def create_future_features(last_date, data, forecast_dates):
+    """Create features for future predictions."""
+    future_df = pd.DataFrame({'ds': forecast_dates})
+    # Use the last known regressor values (or insert forecasts if available)
     last_reg = data.iloc[-1]
     for col in ['temperature_2m_C', 'Total_grid_consumption_MWh', 'wind_speed_100m_kmh', 'is_holiday']:
         future_df[col] = last_reg[col]
-    
-    # Get Prophet trend for future dates
+    # Get Prophet forecast for future dates
     prophet_future = m.predict(future_df)
     future_df = future_df.merge(prophet_future[['ds', 'trend']], on='ds', how='left')
     future_df.rename(columns={'trend': 'prophet_trend'}, inplace=True)
-    
     # Add time features
     future_df['Hour'] = future_df['ds'].dt.hour
     future_df['Day'] = future_df['ds'].dt.day
     future_df['DayOfWeek'] = future_df['ds'].dt.dayofweek
-    
-    # Use the most recent known values for lag and rolling features
-    for col in ['Lag_Price_1', 'Lag_Price_24', 'Rolling_Price_24h', 'Rolling_Temp_24h', 'Rolling_Wind_24h', 'Rolling_Load_24h']:
+    # Use last known lag/rolling features (could be replaced with dynamic forecasts)
+    for col in ['Lag_Price_1', 'Lag_Price_24', 'Rolling_Price_24h', 'Rolling_Temp_24h', 
+                'Rolling_Wind_24h', 'Rolling_Load_24h']:
         future_df[col] = last_reg[col]
-        
     return future_df
 
-last_date = data['Start date/time'].max()
-future_df = create_future_features(last_date, data)
+# Here, we use the same forecast_dates that match the actual data (October 1 to October 7, 2024)
+forecast_dates = pd.date_range(start=forecast_start, end=forecast_end, freq='h')
+future_df = create_future_features(data['Start date/time'].max(), data, forecast_dates)
 
-# Ensure all residual features are present in the future dataframe
+# Ensure all residual features are present
 missing_feats = [f for f in residual_features if f not in future_df.columns]
 if missing_feats:
     raise ValueError(f"Missing features in future_df: {missing_feats}")
 
-# Scale future features and get residual predictions from both models
 future_X = scaler_residual.transform(future_df[residual_features])
 future_df['xgb_res_pred'] = best_xgb_res.predict(future_X)
 future_df['lgb_res_pred'] = best_lgb_res.predict(future_X)
 future_df['ensemble_res_pred'] = (future_df['xgb_res_pred'] + future_df['lgb_res_pred']) / 2
 
-# Final prediction: Prophet trend + ensemble residual
+# Final hybrid prediction for future dates
 future_df['final_price'] = future_df['prophet_trend'] + future_df['ensemble_res_pred']
-
-# Post-process predictions (ensure non-negative and smooth out noise)
 future_df['final_price'] = np.where(future_df['final_price'] < 0, 0, future_df['final_price'])
 future_df['final_price'] = future_df['final_price'].rolling(3, center=True, min_periods=1).mean()
 
-print("Predictions for the next week:")
+print("Predictions for the coming week:")
 print(future_df[['ds', 'final_price']].tail(10))
 
-# Plot future predictions
-plt.figure(figsize=(12,6))
-plt.plot(future_df['ds'], future_df['final_price'], marker='o', label='Predicted Price')
-plt.xlabel("Date/Time")
-plt.ylabel("Price [Euro/MWh]")
-plt.title("Hybrid Model Future Predictions")
-plt.legend()
-plt.grid(True)
-plt.show()
-
 # -----------------------
-# 6. Compare Predictions to Actual Values
+# 6. Compare Predictions to Actual Data
 # -----------------------
-# -----------------------
-# 6. Compare Predictions to Actual Values
-# -----------------------
-
-# Prepare the future predictions dataframe for merging.
-# We rename 'ds' to 'Start date/time' and 'final_price' to 'Predicted Price [Euro/MWh]'
+# Prepare prediction dataframe with matching column names
 future_predictions_df = future_df[['ds', 'final_price']].copy()
 future_predictions_df.rename(columns={'ds': 'Start date/time',
                                         'final_price': 'Predicted Price [Euro/MWh]'}, inplace=True)
 
-# Load actual data (if not already loaded)
+# Actual data for the same period (ensure these dates match the forecast dates)
 actual_data = pd.DataFrame({
     'Start date/time': [
         '2024-10-01 00:00:00', '2024-10-01 01:00:00', '2024-10-01 02:00:00', 
@@ -405,13 +372,10 @@ actual_data = pd.DataFrame({
         229.53, 121.98, 99.93, 91.91, 79.12
     ]
 })
-# Convert actual data datetime if needed
 actual_data['Start date/time'] = pd.to_datetime(actual_data['Start date/time'])
 
-# Merge predictions and actual data on "Start date/time"
+# Merge predictions and actual data
 comparison_df = pd.merge(future_predictions_df, actual_data, on='Start date/time', suffixes=('_predicted', '_actual'))
-
-# Drop any rows missing either predicted or actual prices
 comparison_df = comparison_df.dropna(subset=['Predicted Price [Euro/MWh]', 'Actual Price [Euro/MWh]'])
 
 # Calculate evaluation metrics
@@ -426,7 +390,7 @@ print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
 print(f"Root Mean Squared Error: {rmse:.4f}")
 
-# Plot predicted vs. actual prices
+# Plot predictions vs actual
 plt.figure(figsize=(12, 6))
 plt.plot(comparison_df['Start date/time'], comparison_df['Predicted Price [Euro/MWh]'], label='Predicted', marker='o')
 plt.plot(comparison_df['Start date/time'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
@@ -437,7 +401,7 @@ plt.legend()
 plt.grid(True)
 plt.show()
 
-# Plot residuals (Actual - Predicted)
+# Plot residuals
 comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
 plt.figure(figsize=(12, 6))
 plt.plot(comparison_df['Start date/time'], comparison_df['Residuals'], marker='o', color='red')
