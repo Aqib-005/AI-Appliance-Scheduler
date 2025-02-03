@@ -86,38 +86,25 @@ m.add_regressor('is_holiday')
 # Optionally, add custom seasonality (e.g., an 8-hour cycle)
 m.add_seasonality(name='8hour', period=8, fourier_order=3)
 
-# Fit Prophet
+# Fit Prophet on historical data
 m.fit(prophet_df)
 
-# Define forecast period to match actual data (October 1 to October 7, 2024)
-forecast_start = pd.to_datetime("2024-10-01 00:00:00")
-forecast_end   = pd.to_datetime("2024-10-07 23:00:00")
-forecast_dates = pd.date_range(start=forecast_start, end=forecast_end, freq='h')
-
-future = pd.DataFrame({'ds': forecast_dates})
-# Use the last available regressor values (or use forecasts if available)
-latest_regressors = data[['Start date/time', 'temperature_2m_C', 'Total_grid_consumption_MWh', 
-                          'wind_speed_100m_kmh', 'is_holiday']].iloc[-1]
-for col in ['temperature_2m_C', 'Total_grid_consumption_MWh', 'wind_speed_100m_kmh', 'is_holiday']:
-    future[col] = latest_regressors[col]
-
-# Generate Prophet forecast for the period
-forecast = m.predict(future)
-# Use the trend component as our forecast (alternatively, you could use yhat)
-forecast = forecast[['ds', 'trend']].rename(columns={'trend': 'prophet_trend'})
-
-# Merge the Prophet forecast back into the data (if needed)
-data = data.merge(forecast, left_on='Start date/time', right_on='ds', how='left')
-data['prophet_prediction'] = data['prophet_trend']  # Use trend for hybrid
+# ---- Historical Prediction for Evaluation ----
+# Use the full prophet_df (which has all regressors) to get historical predictions.
+prophet_hist = m.predict(prophet_df)
+prophet_hist = prophet_hist[['ds', 'trend']].rename(columns={'trend': 'prophet_trend'})
+# Merge historical Prophet predictions into data using matching dates
+data = data.merge(prophet_hist, left_on='Start date/time', right_on='ds', how='left')
+data['prophet_prediction'] = data['prophet_trend']  # Use trend as the Prophet prediction
 
 # -----------------------
 # 3. Residual Modeling (Stacked Ensemble)
 # -----------------------
-# Calculate residuals from Prophet
+# Calculate residuals from Prophet predictions
 data['residuals'] = data['Price Germany/Luxembourg [Euro/MWh]'] - data['prophet_prediction']
 data['residuals'] = data['residuals'].fillna(0).replace([np.inf, -np.inf], 0)
 
-# Build features for the residual model
+# Build features for residual model
 residual_features = [
     'temperature_2m_C',
     'wind_speed_100m_kmh',
@@ -209,23 +196,25 @@ data['lgb_res_pred'] = best_lgb_res.predict(X_residual_scaled)
 data['ensemble_res_pred'] = (data['xgb_res_pred'] + data['lgb_res_pred']) / 2
 
 # -----------------------
-# 4. Final Hybrid Prediction
+# 4. Final Hybrid Prediction on Historical Data
 # -----------------------
-# Clean predictions (fill NaNs if any)
+# Ensure no NaNs in key prediction columns
 data['prophet_trend'] = data['prophet_trend'].ffill()
 data['ensemble_res_pred'] = data['ensemble_res_pred'].fillna(0)
 
-# Calculate hybrid prediction
+# Calculate the hybrid prediction as the sum of Prophet prediction and residual correction
 data['hybrid_prediction'] = data['prophet_trend'] + data['ensemble_res_pred']
 
-# Remove any remaining NaNs from the target columns
+# For historical evaluation, drop rows with missing target or prediction values
 valid_data = data.dropna(subset=['Price Germany/Luxembourg [Euro/MWh]', 'hybrid_prediction'])
+if valid_data.empty:
+    raise ValueError("No valid historical data for evaluation. Check your merges and dates.")
 
 rmse = np.sqrt(mean_squared_error(valid_data['Price Germany/Luxembourg [Euro/MWh]'], valid_data['hybrid_prediction']))
 mae = mean_absolute_error(valid_data['Price Germany/Luxembourg [Euro/MWh]'], valid_data['hybrid_prediction'])
 r2 = r2_score(valid_data['Price Germany/Luxembourg [Euro/MWh]'], valid_data['hybrid_prediction'])
 
-print("Final Hybrid Model Evaluation Metrics:")
+print("Final Hybrid Model Evaluation Metrics (Historical):")
 print(f"RMSE: {rmse:.4f}")
 print(f"MAE: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
@@ -242,14 +231,19 @@ plt.show()
 # -----------------------
 # 5. Future Predictions
 # -----------------------
+# Define forecast period (October 1–7, 2024)
+forecast_start = pd.to_datetime("2024-10-01 00:00:00")
+forecast_end   = pd.to_datetime("2024-10-07 23:00:00")
+forecast_dates = pd.date_range(start=forecast_start, end=forecast_end, freq='h')
+
 def create_future_features(last_date, data, forecast_dates):
     """Create features for future predictions."""
     future_df = pd.DataFrame({'ds': forecast_dates})
-    # Use the last known regressor values
+    # Use the last known regressor values from historical data
     last_reg = data.iloc[-1]
     for col in ['temperature_2m_C', 'Total_grid_consumption_MWh', 'wind_speed_100m_kmh', 'is_holiday']:
         future_df[col] = last_reg[col]
-    # Get Prophet forecast for future dates
+    # Get Prophet forecast for future dates (all required regressors are present)
     prophet_future = m.predict(future_df)
     future_df = future_df.merge(prophet_future[['ds', 'trend']], on='ds', how='left')
     future_df.rename(columns={'trend': 'prophet_trend'}, inplace=True)
@@ -257,13 +251,12 @@ def create_future_features(last_date, data, forecast_dates):
     future_df['Hour'] = future_df['ds'].dt.hour
     future_df['Day'] = future_df['ds'].dt.day
     future_df['DayOfWeek'] = future_df['ds'].dt.dayofweek
-    # Use last known lag/rolling features (for demonstration)
+    # For lag/rolling features, use last known values (for demonstration)
     for col in ['Lag_Price_1', 'Lag_Price_24', 'Rolling_Price_24h', 'Rolling_Temp_24h', 
                 'Rolling_Wind_24h', 'Rolling_Load_24h']:
         future_df[col] = last_reg[col]
     return future_df
 
-forecast_dates = pd.date_range(start=forecast_start, end=forecast_end, freq='h')
 future_df = create_future_features(data['Start date/time'].max(), data, forecast_dates)
 
 # Ensure all residual features are present in future_df
@@ -281,81 +274,24 @@ future_df['final_price'] = future_df['prophet_trend'] + future_df['ensemble_res_
 future_df['final_price'] = np.where(future_df['final_price'] < 0, 0, future_df['final_price'])
 future_df['final_price'] = future_df['final_price'].rolling(3, center=True, min_periods=1).mean()
 
-print("Predictions for the coming week:")
+print("Predictions for the Future Period:")
 print(future_df[['ds', 'final_price']].tail(10))
 
 # -----------------------
-# 6. Compare Predictions to Actual Data
+# 6. Compare Future Predictions to Actual Data
 # -----------------------
-# Prepare prediction dataframe with matching column names
+# Prepare the prediction dataframe with matching column names
 future_predictions_df = future_df[['ds', 'final_price']].copy()
 future_predictions_df.rename(columns={'ds': 'Start date/time',
                                         'final_price': 'Predicted Price [Euro/MWh]'}, inplace=True)
-# Ensure the 'Start date/time' columns are datetime
 future_predictions_df['Start date/time'] = pd.to_datetime(future_predictions_df['Start date/time'])
 
-# Actual data for the same period (ensure these dates match the forecast dates)
+# Create dummy actual data for the forecast period (replace with real values)
+# Here we create dummy data for each hour in the forecast period.
 actual_data = pd.DataFrame({
-    'Start date/time': [
-        '2024-10-01 00:00:00', '2024-10-01 01:00:00', '2024-10-01 02:00:00', 
-        '2024-10-01 03:00:00', '2024-10-01 04:00:00', '2024-10-01 05:00:00', 
-        '2024-10-01 06:00:00', '2024-10-01 07:00:00', '2024-10-01 08:00:00', 
-        '2024-10-01 09:00:00', '2024-10-01 10:00:00', '2024-10-01 11:00:00', 
-        '2024-10-01 12:00:00', '2024-10-01 13:00:00', '2024-10-01 14:00:00', 
-        '2024-10-01 15:00:00', '2024-10-01 16:00:00', '2024-10-01 17:00:00', 
-        '2024-10-01 18:00:00', '2024-10-01 19:00:00', '2024-10-01 20:00:00', 
-        '2024-10-01 21:00:00', '2024-10-01 22:00:00', '2024-10-01 23:00:00', 
-        '2024-10-02 00:00:00', '2024-10-02 01:00:00', '2024-10-02 02:00:00', 
-        '2024-10-02 03:00:00', '2024-10-02 04:00:00', '2024-10-02 05:00:00', 
-        '2024-10-02 06:00:00', '2024-10-02 07:00:00', '2024-10-02 08:00:00', 
-        '2024-10-02 09:00:00', '2024-10-02 10:00:00', '2024-10-02 11:00:00', 
-        '2024-10-02 12:00:00', '2024-10-02 13:00:00', '2024-10-02 14:00:00', 
-        '2024-10-02 15:00:00', '2024-10-02 16:00:00', '2024-10-02 17:00:00', 
-        '2024-10-02 18:00:00', '2024-10-02 19:00:00', '2024-10-02 20:00:00', 
-        '2024-10-02 21:00:00', '2024-10-02 22:00:00', '2024-10-02 23:00:00', 
-        '2024-10-03 00:00:00', '2024-10-03 01:00:00', '2024-10-03 02:00:00', 
-        '2024-10-03 03:00:00', '2024-10-03 04:00:00', '2024-10-03 05:00:00', 
-        '2024-10-03 06:00:00', '2024-10-03 07:00:00', '2024-10-03 08:00:00', 
-        '2024-10-03 09:00:00', '2024-10-03 10:00:00', '2024-10-03 11:00:00', 
-        '2024-10-03 12:00:00', '2024-10-03 13:00:00', '2024-10-03 14:00:00', 
-        '2024-10-03 15:00:00', '2024-10-03 16:00:00', '2024-10-03 17:00:00', 
-        '2024-10-03 18:00:00', '2024-10-03 19:00:00', '2024-10-03 20:00:00', 
-        '2024-10-03 21:00:00', '2024-10-03 22:00:00', '2024-10-03 23:00:00', 
-        '2024-10-04 00:00:00', '2024-10-04 01:00:00', '2024-10-04 02:00:00', 
-        '2024-10-04 03:00:00', '2024-10-04 04:00:00', '2024-10-04 05:00:00', 
-        '2024-10-04 06:00:00', '2024-10-04 07:00:00', '2024-10-04 08:00:00', 
-        '2024-10-04 09:00:00', '2024-10-04 10:00:00', '2024-10-04 11:00:00', 
-        '2024-10-04 12:00:00', '2024-10-04 13:00:00', '2024-10-04 14:00:00', 
-        '2024-10-04 15:00:00', '2024-10-04 16:00:00', '2024-10-04 17:00:00', 
-        '2024-10-04 18:00:00', '2024-10-04 19:00:00', '2024-10-04 20:00:00', 
-        '2024-10-04 21:00:00', '2024-10-04 22:00:00', '2024-10-04 23:00:00', 
-        '2024-10-05 00:00:00', '2024-10-05 01:00:00', '2024-10-05 02:00:00', 
-        '2024-10-05 03:00:00', '2024-10-05 04:00:00', '2024-10-05 05:00:00', 
-        '2024-10-05 06:00:00', '2024-10-05 07:00:00', '2024-10-05 08:00:00', 
-        '2024-10-05 09:00:00', '2024-10-05 10:00:00', '2024-10-05 11:00:00', 
-        '2024-10-05 12:00:00', '2024-10-05 13:00:00', '2024-10-05 14:00:00', 
-        '2024-10-05 15:00:00', '2024-10-05 16:00:00', '2024-10-05 17:00:00', 
-        '2024-10-05 18:00:00', '2024-10-05 19:00:00', '2024-10-05 20:00:00', 
-        '2024-10-05 21:00:00', '2024-10-05 22:00:00', '2024-10-05 23:00:00', 
-        '2024-10-06 00:00:00', '2024-10-06 01:00:00', '2024-10-06 02:00:00', 
-        '2024-10-06 03:00:00', '2024-10-06 04:00:00', '2024-10-06 05:00:00', 
-        '2024-10-06 06:00:00', '2024-10-06 07:00:00', '2024-10-06 08:00:00', 
-        '2024-10-06 09:00:00', '2024-10-06 10:00:00', '2024-10-06 11:00:00', 
-        '2024-10-06 12:00:00', '2024-10-06 13:00:00', '2024-10-06 14:00:00', 
-        '2024-10-06 15:00:00', '2024-10-06 16:00:00', '2024-10-06 17:00:00', 
-        '2024-10-06 18:00:00', '2024-10-06 19:00:00', '2024-10-06 20:00:00', 
-        '2024-10-06 21:00:00', '2024-10-06 22:00:00', '2024-10-06 23:00:00', 
-        '2024-10-07 00:00:00', '2024-10-07 01:00:00', '2024-10-07 02:00:00', 
-        '2024-10-07 03:00:00', '2024-10-07 04:00:00', '2024-10-07 05:00:00', 
-        '2024-10-07 06:00:00', '2024-10-07 07:00:00', '2024-10-07 08:00:00', 
-        '2024-10-07 09:00:00', '2024-10-07 10:00:00', '2024-10-07 11:00:00', 
-        '2024-10-07 12:00:00', '2024-10-07 13:00:00', '2024-10-07 14:00:00', 
-        '2024-10-07 15:00:00', '2024-10-07 16:00:00', '2024-10-07 17:00:00', 
-        '2024-10-07 18:00:00', '2024-10-07 19:00:00', '2024-10-07 20:00:00', 
-        '2024-10-07 21:00:00', '2024-10-07 22:00:00', '2024-10-07 23:00:00'
-    ],
-    'Actual Price [Euro/MWh]': [
-        3.21, 0.07, 0.05, 0.02, 0.09, 6.80, 63.96, 103.35, 114.98, 100.41, 
+    'Start date/time': pd.date_range(start=forecast_start, end=forecast_end, freq='h'),
+    # Dummy actual prices: replace these values with your real electricity prices for October 1–7, 2024.
+    'Actual Price [Euro/MWh]': ([3.21, 0.07, 0.05, 0.02, 0.09, 6.80, 63.96, 103.35, 114.98, 100.41, 
         76.48, 68.21, 58.60, 55.66, 56.51, 62.18, 98.94, 109.58, 133.90, 
         136.51, 118.54, 92.30, 91.45, 76.24, 85.44, 80.88, 77.09, 74.93, 
         77.14, 81.10, 96.53, 118.83, 135.70, 117.59, 103.21, 96.52, 90.45, 
@@ -373,34 +309,30 @@ actual_data = pd.DataFrame({
         59.60, 90.94, 106.30, 97.22, 72.98, 59.37, 58.69, 51.71, 34.58, 
         35.34, 33.25, 30.15, 36.09, 46.73, 67.59, 100.92, 108.32, 91.86, 
         66.09, 60.22, 54.11, 43.29, 55.00, 67.01, 97.90, 120.71, 237.65, 
-        229.53, 121.98, 99.93, 91.91, 79.12
-    ]
+        229.53, 121.98, 99.93, 91.91, 79.12] *
+                                  int(np.ceil(len(pd.date_range(start=forecast_start, end=forecast_end, freq='h'))/10)))[:len(pd.date_range(start=forecast_start, end=forecast_end, freq='h'))]
 })
 actual_data['Start date/time'] = pd.to_datetime(actual_data['Start date/time'])
 
 # Merge predictions and actual data on 'Start date/time'
 comparison_df = pd.merge(future_predictions_df, actual_data, on='Start date/time', suffixes=('_predicted', '_actual'))
 
-# Check if the merged DataFrame is empty
 if comparison_df.empty:
     raise ValueError("No matching dates found between predictions and actual data. Please verify your date ranges.")
 
-# Drop any rows missing predicted or actual values
 comparison_df = comparison_df.dropna(subset=['Predicted Price [Euro/MWh]', 'Actual Price [Euro/MWh]'])
 
-# Calculate evaluation metrics
 mse = mean_squared_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
 mae = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
 r2 = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
 rmse = np.sqrt(mse)
 
-print("Evaluation Metrics:")
+print("Evaluation Metrics on Future Predictions:")
 print(f"Mean Squared Error: {mse:.4f}")
 print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
 print(f"Root Mean Squared Error: {rmse:.4f}")
 
-# Plot predicted vs. actual prices
 plt.figure(figsize=(12, 6))
 plt.plot(comparison_df['Start date/time'], comparison_df['Predicted Price [Euro/MWh]'], label='Predicted', marker='o')
 plt.plot(comparison_df['Start date/time'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
@@ -411,7 +343,6 @@ plt.legend()
 plt.grid(True)
 plt.show()
 
-# Plot residuals
 comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
 plt.figure(figsize=(12, 6))
 plt.plot(comparison_df['Start date/time'], comparison_df['Residuals'], marker='o', color='red')
