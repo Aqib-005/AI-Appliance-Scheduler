@@ -91,15 +91,16 @@ data['final_prediction'] = data['prophet_prediction'] + data['ensemble_res_pred'
 # -----------------------
 forecast_start = "2024-10-01"
 forecast_end = "2024-10-07"
+future_features = data[data['Start date/time'].between(forecast_start, forecast_end)][residual_features]
+future_scaled = scaler_residual.transform(future_features)
+future_predictions = best_xgb_res.predict(future_scaled) + best_lgb_res.predict(future_scaled)
 future_predictions_df = pd.DataFrame({
-    'Start date/time': pd.date_range(start=forecast_start, end=forecast_end, freq='h'),
-    'Predicted Price [Euro/MWh]': np.random.uniform(50, 150, size=168)  # Replace with real predictions
+    'Start date/time': data[data['Start date/time'].between(forecast_start, forecast_end)]['Start date/time'],
+    'Predicted Price [Euro/MWh]': data[data['Start date/time'].between(forecast_start, forecast_end)]['prophet_prediction'] + future_predictions / 2
 })
 
-actual_data = pd.DataFrame({
-    'Start date/time': pd.date_range(start=forecast_start, end=forecast_end, freq='h'),
-    'Actual Price [Euro/MWh]': np.random.uniform(40, 160, size=168)  # Replace with actual prices
-})
+actual_data = data[data['Start date/time'].between(forecast_start, forecast_end)][['Start date/time', 'Price Germany/Luxembourg [Euro/MWh]']]
+actual_data.rename(columns={'Price Germany/Luxembourg [Euro/MWh]': 'Actual Price [Euro/MWh]'}, inplace=True)
 
 comparison_df = future_predictions_df.merge(actual_data, on='Start date/time', how='left')
 
