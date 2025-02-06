@@ -139,7 +139,7 @@ class ScheduleController extends Controller
 
         // Initialize schedule tracking appliance counts per hour
         $schedule = [];
-        $penalty = 0.1; // Adjustable penalty factor (10% per appliance)
+        $penalty = 0.1; // Adjustable penalty factor (10% per appliance) //have a good citation
 
         // Group predictions by day
         $predictionsByDay = [];
