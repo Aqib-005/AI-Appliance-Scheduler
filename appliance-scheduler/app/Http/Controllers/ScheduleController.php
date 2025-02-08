@@ -132,7 +132,7 @@ class ScheduleController extends Controller
         \Log::info('Predictions:', $predictions);
         \Log::info('Appliances:', $appliances);
 
-        // Sort predictions by price (ascending)
+        // Sort predictions by price 
         usort($predictions, function ($a, $b) {
             return (float) $a['Predicted Price [Euro/MWh]'] <=> (float) $b['Predicted Price [Euro/MWh]'];
         });
