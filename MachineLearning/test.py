@@ -1,23 +1,34 @@
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import xgboost as xgb
 import matplotlib.pyplot as plt
+import xgboost as xgb
 from prophet import Prophet
 import optuna
 from optuna.samplers import TPESampler
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import joblib
 
-# Load the data
+# -----------------------
+# 1. Data Loading & Preprocessing
+# -----------------------
 data = pd.read_csv("data/merged-data.csv")
 
-# Data cleaning and preprocessing
-data['Price Germany/Luxembourg [Euro/MWh]'] = data['Price Germany/Luxembourg [Euro/MWh]'].replace({',': ''}, regex=True).astype(float)
-data['Total (grid consumption) [MWh]'] = data['Total (grid consumption) [MWh]'].replace({',': ''}, regex=True).astype(float)
+# --- Data cleaning ---
+# Remove commas and convert numeric columns to float
+data['Price Germany/Luxembourg [Euro/MWh]'] = (
+    data['Price Germany/Luxembourg [Euro/MWh]']
+    .replace({',': ''}, regex=True)
+    .astype(float)
+)
+data['Total (grid consumption) [MWh]'] = (
+    data['Total (grid consumption) [MWh]']
+    .replace({',': ''}, regex=True)
+    .astype(float)
+)
 
-# Convert Start date/time to datetime and extract useful time features
+# Convert Start date/time to datetime and extract time features
 data['Start date/time'] = pd.to_datetime(data['Start date/time'], dayfirst=True)
 data['Year'] = data['Start date/time'].dt.year
 data['Month'] = data['Start date/time'].dt.month
@@ -25,18 +36,40 @@ data['Day'] = data['Start date/time'].dt.day
 data['Hour'] = data['Start date/time'].dt.hour
 data['DayOfWeek'] = data['Start date/time'].dt.dayofweek
 
-# Create lagged features for target variable
+# --- Basic diagnostics ---
+print("Target statistics before clipping:")
+print(data['Price Germany/Luxembourg [Euro/MWh]'].describe())
+
+# Optionally, clip extreme target values (e.g., below 1st and above 99th percentile)
+low_clip = data['Price Germany/Luxembourg [Euro/MWh]'].quantile(0.01)
+high_clip = data['Price Germany/Luxembourg [Euro/MWh]'].quantile(0.99)
+data['Price Germany/Luxembourg [Euro/MWh]'] = data['Price Germany/Luxembourg [Euro/MWh]'].clip(lower=low_clip, upper=high_clip)
+
+print("Target statistics after clipping:")
+print(data['Price Germany/Luxembourg [Euro/MWh]'].describe())
+
+# --- Feature engineering ---
+# Lagged target feature
 data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
 
-# Add rolling averages for features
+# Rolling averages (24h windows)
 data['Rolling_Temp_24h'] = data['temperature_2m (°C)'].rolling(window=24).mean()
 data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(window=24).mean()
 data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
 
-# Drop rows with missing values after lagging and rolling
+# Create cyclic features for Hour and DayOfWeek (sine and cosine transforms)
+data['Hour_sin'] = np.sin(2 * np.pi * data['Hour'] / 24)
+data['Hour_cos'] = np.cos(2 * np.pi * data['Hour'] / 24)
+data['DoW_sin'] = np.sin(2 * np.pi * data['DayOfWeek'] / 7)
+data['DoW_cos'] = np.cos(2 * np.pi * data['DayOfWeek'] / 7)
+
+# Drop rows with missing values after lagging/rolling
 data = data.dropna()
 
-# Feature selection
+# -----------------------
+# 2. Feature Selection and Scaling
+# -----------------------
+# Define the feature list
 features = [
     'temperature_2m (°C)', 
     'wind_speed_100m (km/h)', 
@@ -47,75 +80,84 @@ features = [
     'Rolling_Temp_24h',
     'Rolling_Wind_24h',
     'Rolling_Load_24h',
-    'Lag_Price'
+    'Lag_Price',
+    'Hour_sin',
+    'Hour_cos',
+    'DoW_sin',
+    'DoW_cos'
 ]
 target = 'Price Germany/Luxembourg [Euro/MWh]'
 
-# Subset the data
 X = data[features]
 y = data[target]
 
-# Normalize the features
+# Scale features
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
-# TimeSeriesSplit for cross-validation
+# Set up a time-series cross-validator
 tscv = TimeSeriesSplit(n_splits=5)
 
-# Define the objective function for Optuna
+# -----------------------
+# 3. Hyperparameter Tuning & Training with XGBoost
+# -----------------------
 def objective(trial):
     params = {
-        'n_estimators': trial.suggest_int('n_estimators', 50, 300),
-        'max_depth': trial.suggest_int('max_depth', 3, 9),
-        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2),
+        'n_estimators': trial.suggest_int('n_estimators', 100, 500),
+        'max_depth': trial.suggest_int('max_depth', 3, 12),
+        'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.2),
         'subsample': trial.suggest_float('subsample', 0.6, 1.0),
         'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
-        'gamma': trial.suggest_float('gamma', 0, 0.2),
-        'min_child_weight': trial.suggest_int('min_child_weight', 1, 5),
+        'gamma': trial.suggest_float('gamma', 0, 0.3),
+        'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
         'reg_alpha': trial.suggest_float('reg_alpha', 0, 10),
         'reg_lambda': trial.suggest_float('reg_lambda', 0, 10),
         'random_state': 42,
-        'eval_metric': 'rmse',  # Add evaluation metric
-        'early_stopping_rounds': 50  # Add early stopping here
+        'eval_metric': 'rmse',
+        'early_stopping_rounds': 50
     }
-
+    
     scores = []
-
     for train_index, val_index in tscv.split(X_scaled):
         X_train, X_val = X_scaled[train_index], X_scaled[val_index]
         y_train, y_val = y.iloc[train_index], y.iloc[val_index]
-
-        # Initialize the model
+        
         model = xgb.XGBRegressor(**params)
-
-        # Fit the model with early stopping
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            verbose=False
-        )
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         y_pred = model.predict(X_val)
         scores.append(mean_squared_error(y_val, y_pred))
-
     return np.mean(scores)
 
-# Run Bayesian Optimization with Optuna
+# Increase trials for better exploration
 study = optuna.create_study(direction='minimize', sampler=TPESampler(seed=42))
-study.optimize(objective, n_trials=50)  # Number of trials
-
-# Get the best parameters
+study.optimize(objective, n_trials=100)
 best_params = study.best_params
-print(f"Best Parameters: {best_params}")
+print("Best Parameters:", best_params)
 
-# Train the final model with the best parameters
+# Train final model using best parameters on the entire dataset
 best_xgb = xgb.XGBRegressor(**best_params, random_state=42)
 best_xgb.fit(X_scaled, y)
 
-# Analyze feature importance
+# Evaluate the model using the last fold of TimeSeriesSplit
+train_index, test_index = list(tscv.split(X_scaled))[-1]
+X_train, X_test = X_scaled[train_index], X_scaled[test_index]
+y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+y_pred = best_xgb.predict(X_test)
+
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+mae = mean_absolute_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+print("Evaluation Metrics on CV (Last fold):")
+print(f"RMSE: {rmse:.4f}")
+print(f"MAE: {mae:.4f}")
+print(f"R²: {r2:.4f}")
+
+# -----------------------
+# 4. Feature Importance
+# -----------------------
 feature_importance = best_xgb.feature_importances_
 feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': feature_importance})
 feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False)
-
 plt.figure(figsize=(10, 6))
 plt.barh(feature_importance_df['Feature'], feature_importance_df['Importance'])
 plt.xlabel('Importance')
@@ -123,55 +165,135 @@ plt.ylabel('Feature')
 plt.title('Feature Importance')
 plt.show()
 
-# Step 4: Generate predictions for future data
-last_date = data['Start date/time'].max()
-future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='H')
+# -----------------------
+# 5. Future Price Forecasting (Iterative Prediction)
+# -----------------------
+# Define future forecast dates (for one week: December 2, 2024 00:00 to December 8, 2024 23:00)
+future_dates = pd.date_range(start='2024-12-02 00:00:00', end='2024-12-08 23:00:00', freq='h')
 
-# Create future DataFrame
+# Create a future DataFrame with the time features and initialize Lag_Price.
 future_data = pd.DataFrame(index=future_dates)
 future_data['Year'] = future_data.index.year
 future_data['Month'] = future_data.index.month
 future_data['Day'] = future_data.index.day
 future_data['Hour'] = future_data.index.hour
 future_data['DayOfWeek'] = future_data.index.dayofweek
-future_data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
 
-# Forecast weather and load data using Prophet
-def forecast_feature(data, feature, periods=7*24):
+# Add cyclic features for future data
+future_data['Hour_sin'] = np.sin(2 * np.pi * future_data['Hour'] / 24)
+future_data['Hour_cos'] = np.cos(2 * np.pi * future_data['Hour'] / 24)
+future_data['DoW_sin'] = np.sin(2 * np.pi * future_data['DayOfWeek'] / 7)
+future_data['DoW_cos'] = np.cos(2 * np.pi * future_data['DayOfWeek'] / 7)
+
+# Initialize Lag_Price using the last observed price (set manually as 85.00; adjust as needed)
+future_data['Lag_Price'] = 85.00
+
+# Forecast exogenous features using Prophet for the future period
+def forecast_feature(data, feature, start_date='2024-12-02', end_date='2024-12-08'):
+    future = pd.DataFrame({'ds': pd.date_range(start=start_date, end=end_date, freq='H')})
+    model = Prophet(daily_seasonality=True)
     feature_data = data[['Start date/time', feature]].rename(columns={'Start date/time': 'ds', feature: 'y'})
-    model = Prophet()
     model.fit(feature_data)
-    future = model.make_future_dataframe(periods=periods, freq='H')
     forecast = model.predict(future)
-    return forecast['yhat'].tail(periods).values
+    return forecast.set_index('ds')['yhat']
 
 future_data['temperature_2m (°C)'] = forecast_feature(data, 'temperature_2m (°C)')
 future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)')
 future_data['Total (grid consumption) [MWh]'] = forecast_feature(data, 'Total (grid consumption) [MWh]')
 
-# Add rolling averages for future data
+# Compute rolling averages for future data
 future_data['Rolling_Temp_24h'] = future_data['temperature_2m (°C)'].rolling(window=24).mean()
 future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(window=24).mean()
 future_data['Rolling_Load_24h'] = future_data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
 future_data.fillna(method='bfill', inplace=True)
 
-# Predict future prices iteratively
+# Iteratively forecast the price: for each hour, scale features, predict price, and update Lag_Price
 xgb_future_pred = []
 for i in range(len(future_data)):
-    future_data_scaled = scaler.transform(future_data.iloc[i:i+1][features])
-    pred = best_xgb.predict(future_data_scaled)
+    current_features = future_data.iloc[i:i+1][features]
+    future_scaled = scaler.transform(current_features)
+    pred = best_xgb.predict(future_scaled)
     xgb_future_pred.append(pred[0])
     if i < len(future_data) - 1:
         future_data.at[future_data.index[i+1], 'Lag_Price'] = pred[0]
 
-# Save predictions
 future_predictions_df = pd.DataFrame({
     'Start date/time': future_dates,
     'Predicted Price [Euro/MWh]': xgb_future_pred
 })
 
 print("Predictions for the coming week:")
-print(future_predictions_df)
+print(future_predictions_df.head())
 
-joblib.dump(best_xgb, 'xgb_model.pkl')
-joblib.dump(scaler, 'scaler.pkl')
+# -----------------------
+# 6. Actual Data and Evaluation
+# -----------------------
+# Generate actual dates (ensuring 168 hours)
+actual_dates = pd.date_range(start='2024-12-02 00:00:00', end='2024-12-08 23:00:00', freq='h')
+
+# Define the list of actual prices (ensure it has exactly 168 values)
+actual_prices = [
+    85.00, 74.77, 65.78, 61.17, 46.44, 50.21, 69.53, 92.08, 125.25, 
+    125.20, 123.63, 121.27, 115.80, 115.09, 127.60, 136.74, 144.04, 
+    144.75, 147.68, 147.90, 138.00, 120.01, 112.68, 111.72, 102.21, 
+    110.73, 103.05, 96.28, 93.22, 100.48, 108.09, 121.76, 142.39, 
+    154.62, 150.09, 141.37, 139.23, 135.62, 142.41, 150.02, 168.94, 
+    205.18, 210.00, 197.88, 189.83, 170.04, 153.61, 142.08, 130.81, 
+    120.99, 116.66, 112.79, 110.19, 112.26, 120.91, 145.20, 209.76, 
+    276.66, 250.76, 212.21, 198.95, 192.25, 199.82, 218.44, 242.87, 
+    267.35, 287.76, 230.22, 197.59, 165.68, 148.34, 128.33, 113.27, 
+    114.77, 105.74, 103.27, 104.50, 103.27, 104.12, 135.88, 143.54, 
+    141.29, 131.78, 124.92, 107.31, 102.67, 102.93, 102.89, 100.87, 
+    101.50, 118.31, 112.16, 105.36, 87.13, 77.30, 74.17, 43.14, 10.64, 
+    4.60, 3.87, 2.31, 2.99, 10.35, 63.49, 92.71, 110.17, 110.16, 
+    104.08, 98.37, 91.90, 100.70, 109.00, 116.92, 131.55, 142.99, 
+    151.07, 142.48, 130.00, 119.42, 121.08, 102.14, 86.65, 74.32, 
+    68.00, 63.87, 58.09, 50.16, 39.46, 43.28, 58.06, 62.86, 64.92, 
+    64.92, 68.00, 72.84, 74.24, 82.50, 96.45, 96.00, 87.92, 82.41, 
+    78.92, 85.03, 82.50, 74.80, 93.91, 86.83, 86.73, 83.95, 84.44, 
+    91.13, 91.25, 91.29, 100.84, 109.40, 110.84, 117.39, 118.36, 
+    116.74, 111.91, 121.38, 105.94, 113.61, 98.55, 97.69, 91.29, 
+    90.56, 88.60, 75.01
+]
+actual_prices = actual_prices[:len(actual_dates)]
+actual_data = pd.DataFrame({
+    'Start date/time': actual_dates,
+    'Actual Price [Euro/MWh]': actual_prices
+})
+actual_data['Start date/time'] = pd.to_datetime(actual_data['Start date/time'])
+
+# Merge predictions and actual data
+comparison_df = pd.merge(future_predictions_df, actual_data, on='Start date/time', suffixes=('_predicted', '_actual'))
+
+# Calculate evaluation metrics
+mse = mean_squared_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
+mae = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
+r2 = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
+rmse = np.sqrt(mse)
+print("Evaluation Metrics:")
+print(f"Mean Squared Error: {mse:.4f}")
+print(f"Mean Absolute Error: {mae:.4f}")
+print(f"R-squared: {r2:.4f}")
+print(f"Root Mean Squared Error: {rmse:.4f}")
+
+# Plot predicted vs actual prices
+plt.figure(figsize=(12, 6))
+plt.plot(comparison_df['Start date/time'], comparison_df['Predicted Price [Euro/MWh]'], label='Predicted', marker='o')
+plt.plot(comparison_df['Start date/time'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
+plt.title('Predicted vs Actual Hourly Prices')
+plt.xlabel('Date/Time')
+plt.ylabel('Price [Euro/MWh]')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Plot residuals
+comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
+plt.figure(figsize=(12, 6))
+plt.plot(comparison_df['Start date/time'], comparison_df['Residuals'], marker='o', color='red')
+plt.axhline(0, color='black', linestyle='--')
+plt.title('Residuals (Actual - Predicted)')
+plt.xlabel('Date/Time')
+plt.ylabel('Residuals [Euro/MWh]')
+plt.grid(True)
+plt.show()
