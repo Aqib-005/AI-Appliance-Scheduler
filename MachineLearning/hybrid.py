@@ -5,10 +5,14 @@ import matplotlib.pyplot as plt
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.ensemble import RandomForestRegressor
 
-import xgboost as xgb
-import lightgbm as lgb
+from catboost import CatBoostRegressor
 from prophet import Prophet
+
+import optuna
+from optuna.samplers import TPESampler
 
 # -----------------------
 # 1. Data Loading & Preprocessing
@@ -37,22 +41,21 @@ data['DayOfWeek'] = data['Start date/time'].dt.dayofweek
 
 # Create holiday flag for Germany
 de_holidays = holidays.CountryHoliday('DE')
-# Ensure that the Series uses the same index as the DataFrame:
 data['is_holiday'] = pd.Series(data['Start date/time'].dt.date, index=data.index) \
     .isin(list(de_holidays.keys())).astype(int)
 
-# Create lag features using original column names
+# Create lag features
 data['Lag_Price_1'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
 data['Lag_Price_24'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(24)
 data['Lag_Load_1'] = data['Total (grid consumption) [MWh]'].shift(1)
 data['Lag_Load_24'] = data['Total (grid consumption) [MWh]'].shift(24)
 
-# Create rolling averages using original column names
+# Create rolling averages
 data['Rolling_Temp_24h'] = data['temperature_2m (°C)'].rolling(window=24).mean()
 data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(window=24).mean()
 data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
 
-# Rename columns after creating lags/rollings
+# Rename columns (after creating lags/rolling features)
 data.rename(columns={
     'temperature_2m (°C)': 'temperature_2m_C',
     'wind_speed_100m (km/h)': 'wind_speed_100m_kmh',
@@ -86,8 +89,10 @@ data = data.merge(prophet_hist, left_on='Start date/time', right_on='ds', how='l
 data['prophet_prediction'] = data['prophet_trend']
 
 # -----------------------
-# 3. Residual Modeling (Stacked Ensemble)
+# 3. Residual Modeling (Stacked Ensemble) with Hyperparameter Tuning
 # -----------------------
+
+# Calculate residuals (difference between actual price and Prophet trend)
 data['residuals'] = data['Price Germany/Luxembourg [Euro/MWh]'] - data['prophet_prediction']
 data['residuals'] = data['residuals'].fillna(0)
 
@@ -99,20 +104,87 @@ residual_features = [
 X_residual = data[residual_features]
 y_residual = data['residuals']
 
+# Scale residual features
 scaler_residual = StandardScaler()
 X_residual_scaled = scaler_residual.fit_transform(X_residual)
 
-# Train ensemble residual models
-best_xgb_res = xgb.XGBRegressor(n_estimators=200, max_depth=6, learning_rate=0.1,
-                                subsample=0.8, colsample_bytree=0.8, random_state=42)
-best_xgb_res.fit(X_residual_scaled, y_residual)
+# Set up TimeSeriesSplit for cross-validation
+tscv = TimeSeriesSplit(n_splits=5)
 
-best_lgb_res = lgb.LGBMRegressor(n_estimators=200, max_depth=6, learning_rate=0.1,
-                                subsample=0.8, colsample_bytree=0.8, random_state=42)
-best_lgb_res.fit(X_residual_scaled, y_residual)
+# --- Hyperparameter Tuning for CatBoost Residual Model ---
+def objective_catboost(trial):
+    params = {
+        'iterations': trial.suggest_int("iterations", 50, 300),
+        'depth': trial.suggest_int("depth", 3, 10),
+        'learning_rate': trial.suggest_float("learning_rate", 0.01, 0.2),
+        'l2_leaf_reg': trial.suggest_float("l2_leaf_reg", 1, 10),
+        'random_seed': 42,
+        'verbose': False
+    }
+    scores = []
+    for train_index, val_index in tscv.split(X_residual_scaled):
+        X_train, X_val = X_residual_scaled[train_index], X_residual_scaled[val_index]
+        y_train, y_val = y_residual.iloc[train_index], y_residual.iloc[val_index]
+        model = CatBoostRegressor(**params)
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_val)
+        scores.append(mean_squared_error(y_val, y_pred))
+    return np.mean(scores)
 
-data['ensemble_res_pred'] = (best_xgb_res.predict(X_residual_scaled) + best_lgb_res.predict(X_residual_scaled)) / 2
-data['final_prediction'] = data['prophet_prediction'] + data['ensemble_res_pred']
+study_cat = optuna.create_study(direction='minimize', sampler=TPESampler(seed=42))
+study_cat.optimize(objective_catboost, n_trials=50)
+best_cat_params = study_cat.best_params
+print("Best CatBoost Residual Params:", best_cat_params)
+
+# --- Hyperparameter Tuning for RandomForest Residual Model ---
+def objective_rf(trial):
+    params = {
+        'n_estimators': trial.suggest_int("n_estimators", 50, 300),
+        'max_depth': trial.suggest_int("max_depth", 3, 20),
+        'min_samples_split': trial.suggest_int("min_samples_split", 2, 10),
+        'min_samples_leaf': trial.suggest_int("min_samples_leaf", 1, 5),
+        'random_state': 42
+    }
+    scores = []
+    for train_index, val_index in tscv.split(X_residual_scaled):
+        X_train, X_val = X_residual_scaled[train_index], X_residual_scaled[val_index]
+        y_train, y_val = y_residual.iloc[train_index], y_residual.iloc[val_index]
+        model = RandomForestRegressor(**params)
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_val)
+        scores.append(mean_squared_error(y_val, y_pred))
+    return np.mean(scores)
+
+study_rf = optuna.create_study(direction='minimize', sampler=TPESampler(seed=42))
+study_rf.optimize(objective_rf, n_trials=50)
+best_rf_params = study_rf.best_params
+print("Best RandomForest Residual Params:", best_rf_params)
+
+# --- Train Final Residual Models using Best Hyperparameters ---
+final_cat = CatBoostRegressor(**best_cat_params, random_seed=42, verbose=False)
+final_cat.fit(X_residual_scaled, y_residual)
+
+final_rf = RandomForestRegressor(**best_rf_params)
+final_rf.fit(X_residual_scaled, y_residual)
+
+# Ensemble: average the predictions of the tuned residual models
+data['ensemble_res_pred'] = (final_cat.predict(X_residual_scaled) + final_rf.predict(X_residual_scaled)) / 2
+
+# --- Optimize the blending weight (alpha) ---
+# Instead of simply adding the ensemble residual prediction, we multiply it by a weight (alpha)
+alphas = np.linspace(0, 2, 21)  # search from 0 to 2 in steps of 0.1
+best_alpha = 1.0
+best_alpha_mse = float('inf')
+for a in alphas:
+    final_pred_train = data['prophet_prediction'] + a * data['ensemble_res_pred']
+    mse_val = mean_squared_error(data['Price Germany/Luxembourg [Euro/MWh]'], final_pred_train)
+    if mse_val < best_alpha_mse:
+        best_alpha_mse = mse_val
+        best_alpha = a
+print("Optimal blending weight alpha:", best_alpha)
+
+# Final prediction on training data (for reference)
+data['final_prediction'] = data['prophet_prediction'] + best_alpha * data['ensemble_res_pred']
 
 # -----------------------
 # 4. Future Predictions & Comparison with Hardcoded Actual Data
@@ -130,7 +202,6 @@ future_data['Month'] = future_data.index.month
 future_data['Day'] = future_data.index.day
 future_data['Hour'] = future_data.index.hour
 future_data['DayOfWeek'] = future_data.index.dayofweek
-# Set holiday flag properly (make sure to pass the index)
 future_data['is_holiday'] = pd.Series(future_data.index.date, index=future_data.index) \
     .isin(list(de_holidays.keys())).astype(int)
 
@@ -140,17 +211,16 @@ future_data['Lag_Price_24'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(
 
 # Forecast weather and grid consumption features using Prophet.
 def forecast_feature(df, feature, periods=7*24):
-    # Use the renamed column from data
     feature_data = df[['Start date/time', feature]].rename(
         columns={'Start date/time': 'ds', feature: 'y'}
     )
-    model = Prophet(daily_seasonality=True)
-    model.fit(feature_data)
-    future = model.make_future_dataframe(periods=periods, freq='h')
-    forecast = model.predict(future)
+    model_feat = Prophet(daily_seasonality=True)
+    model_feat.fit(feature_data)
+    future_feat = model_feat.make_future_dataframe(periods=periods, freq='h')
+    forecast = model_feat.predict(future_feat)
     return forecast['yhat'].tail(periods).values
 
-# Forecast features using renamed columns
+# Forecast features (using the renamed columns)
 future_data['temperature_2m_C'] = forecast_feature(data, 'temperature_2m_C')
 future_data['wind_speed_100m_kmh'] = forecast_feature(data, 'wind_speed_100m_kmh')
 future_data['Total_grid_consumption_MWh'] = forecast_feature(data, 'Total_grid_consumption_MWh')
@@ -159,9 +229,9 @@ future_data['Total_grid_consumption_MWh'] = forecast_feature(data, 'Total_grid_c
 future_data['Rolling_Temp_24h'] = future_data['temperature_2m_C'].rolling(window=24, min_periods=1).mean()
 future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m_kmh'].rolling(window=24, min_periods=1).mean()
 future_data['Rolling_Load_24h'] = future_data['Total_grid_consumption_MWh'].rolling(window=24, min_periods=1).mean()
-future_data = future_data.bfill()  # backfill to handle any NaNs
+future_data = future_data.bfill()  # backfill any NaNs
 
-# Build a separate DataFrame for Prophet future trend prediction with all regressors
+# Build a separate DataFrame for Prophet future trend prediction with regressors
 future_prophet_df = pd.DataFrame({
     'ds': future_dates,
     'temperature_2m_C': forecast_feature(data, 'temperature_2m_C'),
@@ -175,17 +245,18 @@ prophet_future = m.predict(future_prophet_df)[['ds', 'trend']].rename(columns={'
 future_data = future_data.merge(prophet_future, left_index=True, right_on='ds', how='left')
 future_data.drop(columns=['ds'], inplace=True)
 
-# Check that all residual features are available in future_data
+# Ensure all residual features exist in future_data
 missing_feats = [f for f in residual_features if f not in future_data.columns]
 if missing_feats:
     raise ValueError(f"Missing features in future_data: {missing_feats}")
 
-# Prepare features for residual prediction and scale them
+# Prepare features for residual prediction and scale them using the same scaler
 future_X = scaler_residual.transform(future_data[residual_features])
-future_residual_pred = best_xgb_res.predict(future_X) + best_lgb_res.predict(future_X)
+# Compute ensemble residual prediction (average of CatBoost and RF predictions)
+future_residual_pred = (final_cat.predict(future_X) + final_rf.predict(future_X)) / 2
 
-# Final hybrid future prediction: Prophet trend + half the ensemble residual
-future_final_pred = future_data['prophet_trend'] + future_residual_pred / 2
+# Final hybrid future prediction: Prophet trend + (blended) ensemble residual
+future_final_pred = future_data['prophet_trend'] + best_alpha * future_residual_pred
 
 future_predictions_df = pd.DataFrame({
     'Start date/time': future_dates,
@@ -226,7 +297,7 @@ actual_data = pd.DataFrame({
 actual_data['Start date/time'] = pd.to_datetime(actual_data['Start date/time'])
 
 # Merge predictions and actual data on 'Start date/time'
-comparison_df = pd.merge(future_predictions_df, actual_data, on='Start date/time', how='left', suffixes=('_predicted', '_actual'))
+comparison_df = pd.merge(future_predictions_df, actual_data, on='Start date/time', how='left')
 
 mse = mean_squared_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
 mae = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
@@ -239,6 +310,7 @@ print(f"Mean Absolute Error: {mae:.4f}")
 print(f"R-squared: {r2:.4f}")
 print(f"Root Mean Squared Error: {rmse:.4f}")
 
+# Plot predicted vs. actual prices
 plt.figure(figsize=(12, 6))
 plt.plot(comparison_df['Start date/time'], comparison_df['Predicted Price [Euro/MWh]'], label='Predicted', marker='o')
 plt.plot(comparison_df['Start date/time'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
@@ -249,6 +321,7 @@ plt.legend()
 plt.grid(True)
 plt.show()
 
+# Plot residuals (Actual - Predicted)
 plt.figure(figsize=(12, 6))
 comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
 plt.plot(comparison_df['Start date/time'], comparison_df['Residuals'], marker='o', color='red')
