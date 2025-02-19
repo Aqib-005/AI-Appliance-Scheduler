@@ -217,7 +217,7 @@ future_data.fillna(method='bfill', inplace=True)
 
 # Prepare future features in the same order as training features
 future_X = future_data[features]
-future_X_scaled = scaler.transform(future_X)
+future_X_scaled = scaler.transform(future_X) #test nw
 
 # Iteratively forecast the price: update Lag_Price with the model prediction
 xgb_future_pred = []

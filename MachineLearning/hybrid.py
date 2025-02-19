@@ -109,7 +109,7 @@ scaler_residual = StandardScaler()
 X_residual_scaled = scaler_residual.fit_transform(X_residual)
 
 # Set up TimeSeriesSplit for cross-validation
-tscv = TimeSeriesSplit(n_splits=5)
+tscv = TimeSeriesSplit(n_splits=5) #checks
 
 # --- Hyperparameter Tuning for CatBoost Residual Model ---
 def objective_catboost(trial):
