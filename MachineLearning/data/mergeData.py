@@ -6,23 +6,30 @@ price_data = pd.read_csv('price-data.csv')
 consumption_data = pd.read_csv('consumption-data.csv')
 generation_data = pd.read_csv('generation-data.csv')  # New dataset
 
-# Remove unnecessary columns from all datasets
-columns_to_drop = ['End date/time', 'Unnamed: 0', 'unnamed']  # Add any extra columns to remove
+# Remove unnecessary columns from all datasets (except weather_data)
+columns_to_drop = ['End date/time', 'Unnamed: 0', 'unnamed']
 price_data = price_data.drop(columns=columns_to_drop, errors='ignore')
 consumption_data = consumption_data.drop(columns=columns_to_drop, errors='ignore')
 generation_data = generation_data.drop(columns=columns_to_drop, errors='ignore')
 
-# Convert datetime columns to datetime format
+# Process datetime for weather_data
+# Check if the expected datetime column exists; otherwise, try alternatives
+if 'time' in weather_data.columns:
+    weather_data['time'] = pd.to_datetime(weather_data['time'])
+else:
+    for col in ['Time', 'datetime', 'date']:
+        if col in weather_data.columns:
+            weather_data[col] = pd.to_datetime(weather_data[col])
+            weather_data.rename(columns={col: 'time'}, inplace=True)
+            break
+    else:
+        raise KeyError("No datetime column found in weather_data.")
+
+# Process datetime for other datasets
 def process_datetime(df, col_name):
-    df[col_name] = pd.to_datetime(
-        df[col_name], 
-        format='%b %d, %Y %I:%M %p',
-        errors='coerce'
-    )
+    df[col_name] = pd.to_datetime(df[col_name], format='%b %d, %Y %I:%M %p', errors='coerce')
     return df
 
-# Process datetime for all datasets
-weather_data['time'] = pd.to_datetime(weather_data['time'])
 price_data = process_datetime(price_data, 'Start date/time')
 consumption_data = process_datetime(consumption_data, 'Start date/time')
 generation_data = process_datetime(generation_data, 'Start date/time')
@@ -33,17 +40,14 @@ end_date = '2025-01-01 23:00'
 
 # Filter datasets by the new date range
 def filter_by_date(df, date_col):
-    return df[
-        (df[date_col] >= start_date) & 
-        (df[date_col] <= end_date)
-    ]
+    return df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
 
 weather_data = filter_by_date(weather_data, 'time')
 price_data = filter_by_date(price_data, 'Start date/time')
 consumption_data = filter_by_date(consumption_data, 'Start date/time')
 generation_data = filter_by_date(generation_data, 'Start date/time')
 
-# Remove duplicates in all datasets
+# Remove duplicates in datasets that have a 'Start date/time' column
 for df in [price_data, consumption_data, generation_data]:
     df.drop_duplicates(subset='Start date/time', inplace=True, ignore_index=True)
 
@@ -80,7 +84,6 @@ for df in dfs_to_merge[1:]:
         how='outer',
         suffixes=('', '_DROP')
     )
-    # Remove any duplicate columns
     merged_data = merged_data[[c for c in merged_data.columns if '_DROP' not in c]]
 
 # Add day of week feature
@@ -88,8 +91,8 @@ merged_data['Day of the Week'] = merged_data['Start date/time'].dt.day_name()
 
 # Final cleanup: Sort and forward fill missing weather data
 merged_data.sort_values('Start date/time', inplace=True)
-merged_data.ffill(inplace=True)  # Handle missing values for weather data
+merged_data.ffill(inplace=True)  # Forward fill missing values
 
 # Save merged data
 merged_data.to_csv('merged-data.csv', index=False)
-print("Merged data saved to merged-data-2023-2025.csv")
+print("Merged data saved to merged-data.csv")
