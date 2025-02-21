@@ -1,4 +1,4 @@
-start date/time,temperature_2m (øC),precipitation (mm),rain (mm),snowfall (cm),weather_code (wmo code),wind_speed_100m (km/h),day-price,total-grid,total-consumption,Year,Month,Day,Hour,day of the week
+start date/time,temperature_2m,precipitation (mm),rain (mm),snowfall (cm),weather_code,wind_speed_100m (km/h),day-price,total-grid,total-consumption,Year,Month,Day,Hour,day of the week
 01/01/2023 00:00,14.6,0,0,0,3,47.9,-5.17,"38,346.00","48,748.00",2023,1,1,0,Sunday
 01/01/2023 01:00,15.3,0,0,0,3,50.6,-1.07,"37,777.25","49,802.00",2023,1,1,1,Sunday
 01/01/2023 02:00,15.7,0,0,0,3,50.1,-1.47,"36,939.75","49,802.25",2023,1,1,2,Sunday
