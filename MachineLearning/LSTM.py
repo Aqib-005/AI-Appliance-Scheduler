@@ -3,46 +3,47 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, Conv1D, MaxPooling1D, Flatten
+from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.regularizers import L2
-from prophet import Prophet
 import matplotlib.pyplot as plt
 
 # Load the data
 data = pd.read_csv("data/merged-data.csv")
 
 # Data cleaning and preprocessing
-data['Price Germany/Luxembourg [Euro/MWh]'] = data['Price Germany/Luxembourg [Euro/MWh]'].replace({',': ''}, regex=True).astype(float)
-data['Total (grid consumption) [MWh]'] = data['Total (grid consumption) [MWh]'].replace({',': ''}, regex=True).astype(float)
+data['Price Germany/Luxembourg [Euro/MWh]'] = (
+    data['Price Germany/Luxembourg [Euro/MWh]']
+    .replace({',': ''}, regex=True)
+    .astype(float)
+)
+data['Total (grid consumption) [MWh]'] = (
+    data['Total (grid consumption) [MWh]']
+    .replace({',': ''}, regex=True)
+    .astype(float)
+)
 
-# Convert Start date/time to datetime and extract useful time features
+# Convert Start date/time to datetime
 data['Start date/time'] = pd.to_datetime(data['Start date/time'], dayfirst=True)
-data['Year'] = data['Start date/time'].dt.year
-data['Month'] = data['Start date/time'].dt.month
-data['Day'] = data['Start date/time'].dt.day
-data['Hour'] = data['Start date/time'].dt.hour
-data['DayOfWeek'] = data['Start date/time'].dt.dayofweek
 
-# Create lagged features for target variable
+# Create a lagged feature for the target variable
 data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
 
-# Add rolling averages for features
+# Add rolling averages (24h) for key features
 data['Rolling_Temp_24h'] = data['temperature_2m (°C)'].rolling(window=24).mean()
 data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(window=24).mean()
 data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
 
-# Drop rows with missing values after lagging and rolling
+# Drop rows with missing values after creating lagged/rolling features
 data = data.dropna()
 
-# Feature selection
+# Feature selection (ensure these columns exist in your dataset)
 features = [
     'temperature_2m (°C)', 
     'wind_speed_100m (km/h)', 
     'Total (grid consumption) [MWh]', 
-    'Day', 
-    'Hour', 
-    'DayOfWeek',
+    'Day',            # Assuming your dataset already has 'Day'
+    'Hour',           # Assuming your dataset already has 'Hour'
+    'DayOfWeek',      # Assuming your dataset already has 'DayOfWeek'
     'Rolling_Temp_24h',
     'Rolling_Wind_24h',
     'Rolling_Load_24h',
@@ -54,14 +55,14 @@ target = 'Price Germany/Luxembourg [Euro/MWh]'
 X = data[features]
 y = data[target]
 
-# Normalize the features
+# Scale features
 scaler_X = StandardScaler()
 X_scaled = scaler_X.fit_transform(X)
 
 scaler_y = MinMaxScaler()
 y_scaled = scaler_y.fit_transform(y.values.reshape(-1, 1))
 
-# Prepare data for LSTM
+# Helper function to create sequences for LSTM
 def create_sequences(X, y, time_steps=24):
     X_seq, y_seq = [], []
     for i in range(len(X) - time_steps):
@@ -69,10 +70,11 @@ def create_sequences(X, y, time_steps=24):
         y_seq.append(y[i+time_steps])
     return np.array(X_seq), np.array(y_seq)
 
-time_steps = 24  # Experiment with different values
+# Create sequences with a 24-hour look-back window (you can adjust as needed)
+time_steps = 24
 X_seq, y_seq = create_sequences(X_scaled, y_scaled, time_steps)
 
-# Split into training and testing sets
+# Train-test split
 train_size = int(len(X_seq) * 0.8)
 X_train, X_test = X_seq[:train_size], X_seq[train_size:]
 y_train, y_test = y_seq[:train_size], y_seq[train_size:]
@@ -88,7 +90,7 @@ model = Sequential([
 
 model.compile(optimizer='adam', loss='mse')
 
-# Train the model with early stopping
+# Train with early stopping
 early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
 history = model.fit(
     X_train, y_train,
@@ -99,7 +101,7 @@ history = model.fit(
     verbose=1
 )
 
-# Evaluate the model
+# Predictions
 y_pred_scaled = model.predict(X_test)
 y_pred = scaler_y.inverse_transform(y_pred_scaled)
 y_test_actual = scaler_y.inverse_transform(y_test)
