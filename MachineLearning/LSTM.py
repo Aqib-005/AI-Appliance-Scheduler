@@ -6,63 +6,64 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
 import matplotlib.pyplot as plt
+from prophet import Prophet
 
-# Load the data
+# 1. Load your CSV
 data = pd.read_csv("data/merged-data.csv")
 
-# Data cleaning and preprocessing
-data['Price Germany/Luxembourg [Euro/MWh]'] = (
-    data['Price Germany/Luxembourg [Euro/MWh]']
-    .replace({',': ''}, regex=True)
-    .astype(float)
-)
-data['Total (grid consumption) [MWh]'] = (
-    data['Total (grid consumption) [MWh]']
-    .replace({',': ''}, regex=True)
-    .astype(float)
-)
+# 2. Rename columns for consistency
+data.rename(columns={
+    'start date/time': 'StartDateTime',
+    'day of the week': 'DayOfWeek',
+    'day-price': 'Price'
+}, inplace=True)
 
-# Convert Start date/time to datetime
-data['Start date/time'] = pd.to_datetime(data['Start date/time'], dayfirst=True)
+# 3. Convert columns to float
+data['Price'] = data['Price'].replace({',': ''}, regex=True).astype(float)
+data['total-consumption'] = data['total-consumption'].replace({',': ''}, regex=True).astype(float)
 
-# Create a lagged feature for the target variable
-data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
+# 4. Convert to datetime and extract temporal features
+data['StartDateTime'] = pd.to_datetime(data['StartDateTime'], dayfirst=True)
+data['Day'] = data['StartDateTime'].dt.day  # Extract day from datetime
+data['Hour'] = data['StartDateTime'].dt.hour  # Extract hour from datetime
 
-# Add rolling averages (24h) for key features
-data['Rolling_Temp_24h'] = data['temperature_2m (°C)'].rolling(window=24).mean()
-data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(window=24).mean()
-data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
+# 5. Map DayOfWeek from string to numeric
+day_map = {
+    "Monday": 0, "Tuesday": 1, "Wednesday": 2,
+    "Thursday": 3, "Friday": 4, "Saturday": 5, "Sunday": 6
+}
+data['DayOfWeek'] = data['DayOfWeek'].map(day_map)
 
-# Drop rows with missing values after creating lagged/rolling features
-data = data.dropna()
+# 6-8. Feature engineering (lagged price and rolling averages)
+data['Lag_Price'] = data['Price'].shift(1)
+data['Rolling_Temp_24h'] = data['temperature_2m'].rolling(24).mean()
+data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(24).mean()
+data['Rolling_Load_24h'] = data['total-consumption'].rolling(24).mean()
+data.dropna(inplace=True)
 
-# Feature selection (ensure these columns exist in your dataset)
+# 9. Updated feature selection
 features = [
-    'temperature_2m (°C)', 
-    'wind_speed_100m (km/h)', 
-    'Total (grid consumption) [MWh]', 
-    'Day',            # Assuming your dataset already has 'Day'
-    'Hour',           # Assuming your dataset already has 'Hour'
-    'DayOfWeek',      # Assuming your dataset already has 'DayOfWeek'
-    'Rolling_Temp_24h',
-    'Rolling_Wind_24h',
-    'Rolling_Load_24h',
+    'temperature_2m',
+    'wind_speed_100m (km/h)',
+    'total-consumption',
+    'Day', 'Hour', 'DayOfWeek',
+    'Rolling_Temp_24h', 'Rolling_Wind_24h', 'Rolling_Load_24h',
     'Lag_Price'
 ]
-target = 'Price Germany/Luxembourg [Euro/MWh]'
+target = 'Price'
 
-# Subset the data
+# 10. Subset data into X (features) and y (target)
 X = data[features]
 y = data[target]
 
-# Scale features
+# 11. Scale features and target
 scaler_X = StandardScaler()
 X_scaled = scaler_X.fit_transform(X)
 
 scaler_y = MinMaxScaler()
 y_scaled = scaler_y.fit_transform(y.values.reshape(-1, 1))
 
-# Helper function to create sequences for LSTM
+# 12. Prepare sequences for LSTM
 def create_sequences(X, y, time_steps=24):
     X_seq, y_seq = [], []
     for i in range(len(X) - time_steps):
@@ -70,16 +71,15 @@ def create_sequences(X, y, time_steps=24):
         y_seq.append(y[i+time_steps])
     return np.array(X_seq), np.array(y_seq)
 
-# Create sequences with a 24-hour look-back window (you can adjust as needed)
-time_steps = 24
+time_steps = 24  # 24-hour lookback window
 X_seq, y_seq = create_sequences(X_scaled, y_scaled, time_steps)
 
-# Train-test split
+# 13. Split into training and testing sets (80% train, 20% test)
 train_size = int(len(X_seq) * 0.8)
 X_train, X_test = X_seq[:train_size], X_seq[train_size:]
 y_train, y_test = y_seq[:train_size], y_seq[train_size:]
 
-# Build a simpler LSTM model
+# 14. Build the LSTM model
 model = Sequential([
     LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
     Dropout(0.3),
@@ -87,11 +87,12 @@ model = Sequential([
     Dropout(0.3),
     Dense(1)
 ])
-
 model.compile(optimizer='adam', loss='mse')
 
-# Train with early stopping
+# 15. Early stopping to prevent overfitting
 early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
+# 16. Train the model
 history = model.fit(
     X_train, y_train,
     validation_data=(X_test, y_test),
@@ -101,24 +102,24 @@ history = model.fit(
     verbose=1
 )
 
-# Predictions
+# 17. Make predictions on the test set
 y_pred_scaled = model.predict(X_test)
 y_pred = scaler_y.inverse_transform(y_pred_scaled)
 y_test_actual = scaler_y.inverse_transform(y_test)
 
-# Evaluation metrics
-mse = mean_squared_error(y_test_actual, y_pred)
-mae = mean_absolute_error(y_test_actual, y_pred)
-r2 = r2_score(y_test_actual, y_pred)
-rmse = np.sqrt(mse)
+# 18. Calculate evaluation metrics
+mse_val = mean_squared_error(y_test_actual, y_pred)
+mae_val = mean_absolute_error(y_test_actual, y_pred)
+r2_val = r2_score(y_test_actual, y_pred)
+rmse_val = np.sqrt(mse_val)
 
 print("Evaluation Metrics:")
-print(f"Mean Squared Error: {mse:.4f}")
-print(f"Mean Absolute Error: {mae:.4f}")
-print(f"R-squared: {r2:.4f}")
-print(f"Root Mean Squared Error: {rmse:.4f}")
+print(f"Mean Squared Error: {mse_val:.4f}")
+print(f"Mean Absolute Error: {mae_val:.4f}")
+print(f"R-squared: {r2_val:.4f}")
+print(f"Root Mean Squared Error: {rmse_val:.4f}")
 
-# Plot training and validation loss
+# 19. Plot training and validation loss
 plt.figure(figsize=(10, 6))
 plt.plot(history.history['loss'], label='Training Loss')
 plt.plot(history.history['val_loss'], label='Validation Loss')
@@ -128,17 +129,22 @@ plt.ylabel('Loss')
 plt.legend()
 plt.show()
 
-# Predict for the coming week
-def forecast_feature(data, feature, periods=7*24):
-    feature_data = data[['Start date/time', feature]].rename(columns={'Start date/time': 'ds', feature: 'y'})
-    model = Prophet()
-    model.fit(feature_data)
-    future = model.make_future_dataframe(periods=periods, freq='H')
-    forecast = model.predict(future)
-    return forecast['yhat'].tail(periods).values
+# ----- Forecasting for the Coming Week using Prophet -----
 
-last_date = data['Start date/time'].max()
-future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='H')
+def forecast_feature(data, feature, start_date, end_date):
+    """Forecast a feature between specific dates using Prophet"""
+    feature_data = data[['StartDateTime', feature]].rename(columns={'StartDateTime': 'ds', feature: 'y'})
+    model_prophet = Prophet()
+    model_prophet.fit(feature_data)
+    
+    future = pd.date_range(start=start_date, end=end_date, freq='h')  # Changed to 'h'
+    forecast = model_prophet.predict(pd.DataFrame({'ds': future}))
+    return forecast[['ds', 'yhat']]
+
+# Define custom date range
+start_date = '2024-10-01 00:00:00'
+end_date = '2024-10-07 23:00:00'
+future_dates = pd.date_range(start=start_date, end=end_date, freq='h')
 
 # Create future DataFrame
 future_data = pd.DataFrame(index=future_dates)
@@ -147,43 +153,52 @@ future_data['Month'] = future_data.index.month
 future_data['Day'] = future_data.index.day
 future_data['Hour'] = future_data.index.hour
 future_data['DayOfWeek'] = future_data.index.dayofweek
-future_data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
 
-# Forecast weather and load data using Prophet
-future_data['temperature_2m (°C)'] = forecast_feature(data, 'temperature_2m (°C)')
-future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)')
-future_data['Total (grid consumption) [MWh]'] = forecast_feature(data, 'Total (grid consumption) [MWh]')
+# Forecast features for custom dates
+temp_forecast = forecast_feature(data, 'temperature_2m', start_date, end_date)
+wind_forecast = forecast_feature(data, 'wind_speed_100m (km/h)', start_date, end_date)
+load_forecast = forecast_feature(data, 'total-consumption', start_date, end_date)
 
-# Add rolling averages for future data
-future_data['Rolling_Temp_24h'] = future_data['temperature_2m (°C)'].rolling(window=24).mean()
-future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(window=24).mean()
-future_data['Rolling_Load_24h'] = future_data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
-future_data.fillna(method='bfill', inplace=True)
+# Merge forecasts
+future_data = future_data.merge(temp_forecast, left_index=True, right_on='ds')
+future_data = future_data.merge(wind_forecast, on='ds', suffixes=('', '_wind'))
+future_data = future_data.merge(load_forecast, on='ds', suffixes=('', '_load'))
+future_data.rename(columns={
+    'yhat': 'temperature_2m',
+    'yhat_wind': 'wind_speed_100m (km/h)',
+    'yhat_load': 'total-consumption'
+}, inplace=True)
 
-# Scale future data
+# Add rolling averages
+future_data['Rolling_Temp_24h'] = future_data['temperature_2m'].rolling(24).mean()
+future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(24).mean()
+future_data['Rolling_Load_24h'] = future_data['total-consumption'].rolling(24).mean()
+future_data['Lag_Price'] = data['Price'].iloc[-1]
+future_data.bfill(inplace=True)
+
+# Scale features
 future_data_scaled = scaler_X.transform(future_data[features])
 
-# Prepare future data for LSTM
+# Prepare sequences
 future_seq = []
 for i in range(len(future_data_scaled) - time_steps + 1):
     future_seq.append(future_data_scaled[i:i+time_steps])
 future_seq = np.array(future_seq)
 
-# Predict future prices
+# Predict prices
 future_predictions_scaled = model.predict(future_seq)
 future_predictions = scaler_y.inverse_transform(future_predictions_scaled)
 
 # Save predictions
 future_predictions_df = pd.DataFrame({
-    'Start date/time': future_dates[time_steps-1:],
+    'StartDateTime': future_dates[time_steps-1:],
     'Predicted Price [Euro/MWh]': future_predictions.flatten()
 })
-future_predictions_df.to_csv('future_predictions_lstm.csv', index=False)
-print("Future Predictions Saved.")
+future_predictions_df.to_csv('custom_predictions.csv', index=False)
 
-# Load actual data
+# ----- Comparison with Actual Data -----
 actual_data = pd.DataFrame({
-    'Start date/time': [
+     'StartDateTime': [ 
         '2024-10-01 00:00:00', '2024-10-01 01:00:00', '2024-10-01 02:00:00', 
         '2024-10-01 03:00:00', '2024-10-01 04:00:00', '2024-10-01 05:00:00', 
         '2024-10-01 06:00:00', '2024-10-01 07:00:00', '2024-10-01 08:00:00', 
@@ -241,7 +256,7 @@ actual_data = pd.DataFrame({
         '2024-10-07 18:00:00', '2024-10-07 19:00:00', '2024-10-07 20:00:00', 
         '2024-10-07 21:00:00', '2024-10-07 22:00:00', '2024-10-07 23:00:00'
     ],
-    'Actual Price [Euro/MWh]': [
+   'Actual Price [Euro/MWh]': [ 
         3.21, 0.07, 0.05, 0.02, 0.09, 6.80, 63.96, 103.35, 114.98, 100.41, 
         76.48, 68.21, 58.60, 55.66, 56.51, 62.18, 98.94, 109.58, 133.90, 
         136.51, 118.54, 92.30, 91.45, 76.24, 85.44, 80.88, 77.09, 74.93, 
@@ -263,41 +278,42 @@ actual_data = pd.DataFrame({
         229.53, 121.98, 99.93, 91.91, 79.12
     ]
 })
-actual_data['Start date/time'] = pd.to_datetime(actual_data['Start date/time'])
+actual_data['StartDateTime'] = pd.to_datetime(actual_data['StartDateTime'])
 
-# Merge predictions and actual data
-comparison_df = pd.merge(future_predictions_df, actual_data, on='Start date/time', suffixes=('_predicted', '_actual'))
+comparison_df = pd.merge(future_predictions_df, actual_data, on='StartDateTime', how='inner')
 
-# Calculate evaluation metrics
-mse = mean_squared_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
-mae = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
-r2 = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
-rmse = np.sqrt(mse)
+if comparison_df.empty:
+    print("No matching actual data available for the forecast period. Skipping future evaluation metrics.")
+else:
+    mse_future = mean_squared_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
+    mae_future = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
+    r2_future = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
+    rmse_future = np.sqrt(mse_future)
 
-print("Future Evaluation Metrics:")
-print(f"Mean Squared Error: {mse:.4f}")
-print(f"Mean Absolute Error: {mae:.4f}")
-print(f"R-squared: {r2:.4f}")
-print(f"Root Mean Squared Error: {rmse:.4f}")
+    print("Future Evaluation Metrics:")
+    print(f"Mean Squared Error: {mse_future:.4f}")
+    print(f"Mean Absolute Error: {mae_future:.4f}")
+    print(f"R-squared: {r2_future:.4f}")
+    print(f"Root Mean Squared Error: {rmse_future:.4f}")
 
-# Plot predicted vs actual prices
-plt.figure(figsize=(12, 6))
-plt.plot(comparison_df['Start date/time'], comparison_df['Predicted Price [Euro/MWh]'], label='Predicted', marker='o')
-plt.plot(comparison_df['Start date/time'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
-plt.title('Predicted vs Actual Hourly Prices')
-plt.xlabel('Date/Time')
-plt.ylabel('Price [Euro/MWh]')
-plt.legend()
-plt.grid(True)
-plt.show()
+    # Plot predicted vs actual prices
+    plt.figure(figsize=(12, 6))
+    plt.plot(comparison_df['StartDateTime'], comparison_df['Predicted Price [Euro/MWh]'], label='Predicted', marker='o')
+    plt.plot(comparison_df['StartDateTime'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
+    plt.title('Predicted vs Actual Hourly Prices')
+    plt.xlabel('StartDateTime')
+    plt.ylabel('Price [Euro/MWh]')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 
-# Plot residuals
-comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
-plt.figure(figsize=(12, 6))
-plt.plot(comparison_df['Start date/time'], comparison_df['Residuals'], marker='o', color='red')
-plt.axhline(0, color='black', linestyle='--')
-plt.title('Residuals (Actual - Predicted)')
-plt.xlabel('Date/Time')
-plt.ylabel('Residuals [Euro/MWh]')
-plt.grid(True)
-plt.show()
+    # Plot residuals
+    comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
+    plt.figure(figsize=(12, 6))
+    plt.plot(comparison_df['StartDateTime'], comparison_df['Residuals'], marker='o', color='red')
+    plt.axhline(0, color='black', linestyle='--')
+    plt.title('Residuals (Actual - Predicted)')
+    plt.xlabel('StartDateTime')
+    plt.ylabel('Residuals [Euro/MWh]')
+    plt.grid(True)
+    plt.show()
