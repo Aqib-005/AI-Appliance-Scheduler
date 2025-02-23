@@ -4,120 +4,190 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler
+from tensorflow.keras.regularizers import L1L2
+from tensorflow.keras.optimizers import Adam
 import matplotlib.pyplot as plt
 from prophet import Prophet
 
-# 1. Load your CSV
-data = pd.read_csv("data/merged-data.csv")
+# 1. Enhanced Data Loading and Preprocessing
+def load_and_preprocess_data(path):
+    data = pd.read_csv(path)
+    
+    # Column standardization
+    data.rename(columns={
+        'start date/time': 'StartDateTime',
+        'day of the week': 'DayOfWeek',
+        'day-price': 'Price'
+    }, inplace=True)
+    
+    # Numeric conversion with error handling
+    numeric_cols = ['Price', 'total-consumption']
+    for col in numeric_cols:
+        data[col] = data[col].astype(str).str.replace(',', '', regex=False)
+        data[col] = pd.to_numeric(data[col], errors='coerce')
+    
+    # Datetime handling
+    data['StartDateTime'] = pd.to_datetime(data['StartDateTime'], dayfirst=True)
+    data = data.sort_values('StartDateTime').reset_index(drop=True)
+    
+    # Temporal feature engineering
+    data['Day'] = data['StartDateTime'].dt.day
+    data['Hour'] = data['StartDateTime'].dt.hour
+    data['DayOfWeek'] = data['DayOfWeek'].map({
+        "Monday": 0, "Tuesday": 1, "Wednesday": 2,
+        "Thursday": 3, "Friday": 4, "Saturday": 5, "Sunday": 6
+    })
+    
+    return data.dropna()
 
-# 2. Rename columns for consistency
-data.rename(columns={
-    'start date/time': 'StartDateTime',
-    'day of the week': 'DayOfWeek',
-    'day-price': 'Price'
-}, inplace=True)
+# 2. Advanced Feature Engineering
+def create_features(data, lookback=72):
+    # Multiple lagged features
+    for lag in [1, 24, 48]:
+        data[f'Lag_Price_{lag}'] = data['Price'].shift(lag)
+    
+    # Rolling features with dynamic window
+    rolling_windows = {
+        'temperature_2m': 24,
+        'wind_speed_100m (km/h)': 12,
+        'total-consumption': 24
+    }
+    
+    for col, window in rolling_windows.items():
+        data[f'Rolling_{col.split(" ")[0]}_{window}h'] = data[col].rolling(window).mean()
+        data[f'Rolling_{col.split(" ")[0]}_{window}h_std'] = data[col].rolling(window).std()
+    
+    # Cyclical encoding for temporal features
+    data['Hour_sin'] = np.sin(2 * np.pi * data['Hour']/24)
+    data['Hour_cos'] = np.cos(2 * np.pi * data['Hour']/24)
+    data['DayOfWeek_sin'] = np.sin(2 * np.pi * data['DayOfWeek']/7)
+    data['DayOfWeek_cos'] = np.cos(2 * np.pi * data['DayOfWeek']/7)
+    
+    return data.dropna()
 
-# 3. Convert columns to float
-data['Price'] = data['Price'].replace({',': ''}, regex=True).astype(float)
-data['total-consumption'] = data['total-consumption'].replace({',': ''}, regex=True).astype(float)
+# 3. Model Architecture with Regularization
+def build_lstm_model(input_shape):
+    model = Sequential([
+        LSTM(128, return_sequences=True, 
+             input_shape=input_shape,
+             kernel_regularizer=L1L2(l1=1e-5, l2=1e-4)),
+        Dropout(0.3),
+        LSTM(64, return_sequences=False,
+             kernel_regularizer=L1L2(l1=1e-5, l2=1e-4)),
+        Dropout(0.2),
+        Dense(32, activation='relu'),
+        Dense(1)
+    ])
+    
+    return model
 
-# 4. Convert to datetime and extract temporal features
-data['StartDateTime'] = pd.to_datetime(data['StartDateTime'], dayfirst=True)
-data['Day'] = data['StartDateTime'].dt.day  # Extract day from datetime
-data['Hour'] = data['StartDateTime'].dt.hour  # Extract hour from datetime
+# 4. Learning Rate Schedule
+def lr_scheduler(epoch, lr):
+    if epoch < 30:
+        return lr
+    elif epoch < 60:
+        return lr * 0.5
+    else:
+        return lr * 0.1
+    
+def prepare_future_data(future_data, historical_data):
+    """Add engineered features to future data using historical context"""
+    # Cyclical encoding
+    future_data['Hour_sin'] = np.sin(2 * np.pi * future_data['Hour']/24)
+    future_data['Hour_cos'] = np.cos(2 * np.pi * future_data['Hour']/24)
+    future_data['DayOfWeek_sin'] = np.sin(2 * np.pi * future_data['DayOfWeek']/7)
+    future_data['DayOfWeek_cos'] = np.cos(2 * np.pi * future_data['DayOfWeek']/7)
+    
+    # Lagged prices initialization
+    last_prices = historical_data['Price'].iloc[-48:].values
+    for lag in [1, 24, 48]:
+        future_data[f'Lag_Price_{lag}'] = np.concatenate([
+            last_prices[-lag:], 
+            np.zeros(len(future_data) - lag)  # Fill remaining with 0s
+        ])[:len(future_data)]
+    
+    # Rolling features initialization
+    rolling_config = {
+        'temperature_2m': 24,
+        'wind_speed_100m (km/h)': 12,
+        'total-consumption': 24
+    }
+    
+    for col, window in rolling_config.items():
+        col_base = col.split(" ")[0]
+        # Initialize with historical rolling values
+        historical_vals = historical_data[f'Rolling_{col_base}_{window}h'][-window:].values
+        future_vals = future_data[col].rolling(window, min_periods=1).mean().values
+        future_data[f'Rolling_{col_base}_{window}h'] = np.concatenate([
+            historical_vals,
+            future_vals[window:]
+        ])[:len(future_data)]
+        
+    return future_data.ffill().bfill()
 
-# 5. Map DayOfWeek from string to numeric
-day_map = {
-    "Monday": 0, "Tuesday": 1, "Wednesday": 2,
-    "Thursday": 3, "Friday": 4, "Saturday": 5, "Sunday": 6
-}
-data['DayOfWeek'] = data['DayOfWeek'].map(day_map)
-
-# 6-8. Feature engineering (lagged price and rolling averages)
-data['Lag_Price'] = data['Price'].shift(1)
-data['Rolling_Temp_24h'] = data['temperature_2m'].rolling(24).mean()
-data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(24).mean()
-data['Rolling_Load_24h'] = data['total-consumption'].rolling(24).mean()
-data.dropna(inplace=True)
-
-# 9. Updated feature selection
-features = [
-    'temperature_2m',
-    'wind_speed_100m (km/h)',
-    'total-consumption',
-    'Day', 'Hour', 'DayOfWeek',
-    'Rolling_Temp_24h', 'Rolling_Wind_24h', 'Rolling_Load_24h',
-    'Lag_Price'
-]
-target = 'Price'
-
-# 10. Subset data into X (features) and y (target)
-X = data[features]
-y = data[target]
-
-# 11. Scale features and target
-scaler_X = StandardScaler()
-X_scaled = scaler_X.fit_transform(X)
-
-scaler_y = MinMaxScaler()
-y_scaled = scaler_y.fit_transform(y.values.reshape(-1, 1))
-
-# 12. Prepare sequences for LSTM
-def create_sequences(X, y, time_steps=24):
-    X_seq, y_seq = [], []
-    for i in range(len(X) - time_steps):
-        X_seq.append(X[i:i+time_steps])
-        y_seq.append(y[i+time_steps])
-    return np.array(X_seq), np.array(y_seq)
-
-time_steps = 24  # 24-hour lookback window
-X_seq, y_seq = create_sequences(X_scaled, y_scaled, time_steps)
-
-# 13. Split into training and testing sets (80% train, 20% test)
-train_size = int(len(X_seq) * 0.8)
-X_train, X_test = X_seq[:train_size], X_seq[train_size:]
-y_train, y_test = y_seq[:train_size], y_seq[train_size:]
-
-# 14. Build the LSTM model
-model = Sequential([
-    LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
-    Dropout(0.3),
-    LSTM(25, return_sequences=False),
-    Dropout(0.3),
-    Dense(1)
-])
-model.compile(optimizer='adam', loss='mse')
-
-# 15. Early stopping to prevent overfitting
-early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-
-# 16. Train the model
-history = model.fit(
-    X_train, y_train,
-    validation_data=(X_test, y_test),
-    epochs=100,
-    batch_size=32,
-    callbacks=[early_stopping],
-    verbose=1
-)
-
-# 17. Make predictions on the test set
-y_pred_scaled = model.predict(X_test)
-y_pred = scaler_y.inverse_transform(y_pred_scaled)
-y_test_actual = scaler_y.inverse_transform(y_test)
-
-# 18. Calculate evaluation metrics
-mse_val = mean_squared_error(y_test_actual, y_pred)
-mae_val = mean_absolute_error(y_test_actual, y_pred)
-r2_val = r2_score(y_test_actual, y_pred)
-rmse_val = np.sqrt(mse_val)
-
-print("Evaluation Metrics:")
-print(f"Mean Squared Error: {mse_val:.4f}")
-print(f"Mean Absolute Error: {mae_val:.4f}")
-print(f"R-squared: {r2_val:.4f}")
-print(f"Root Mean Squared Error: {rmse_val:.4f}")
+# Main Execution Flow
+if __name__ == "__main__":
+    # Load and preprocess data
+    data = load_and_preprocess_data("data/merged-data.csv")
+    data = create_features(data)
+    
+    # Feature Selection
+    features = [
+        'temperature_2m', 'wind_speed_100m (km/h)', 'total-consumption',
+        'Hour_sin', 'Hour_cos', 'DayOfWeek_sin', 'DayOfWeek_cos',
+        'Lag_Price_1', 'Lag_Price_24', 'Lag_Price_48',
+        'Rolling_temperature_2m_24h', 'Rolling_wind_speed_100m_12h',
+        'Rolling_total-consumption_24h'
+    ]
+    target = 'Price'
+    
+    # Data Scaling
+    scaler_X = StandardScaler()
+    scaler_y = MinMaxScaler()
+    
+    X = scaler_X.fit_transform(data[features])
+    y = scaler_y.fit_transform(data[target].values.reshape(-1, 1))
+    
+    # Sequence Creation
+    def create_sequences(X, y, time_steps=24):
+        X_seq, y_seq = [], []
+        for i in range(len(X) - time_steps):
+            X_seq.append(X[i:i+time_steps])
+            y_seq.append(y[i+time_steps])
+        return np.array(X_seq), np.array(y_seq)
+    
+    X_seq, y_seq = create_sequences(X, y)
+    train_size = int(len(X_seq) * 0.8)
+    X_train, X_test = X_seq[:train_size], X_seq[train_size:]
+    y_train, y_test = y_seq[:train_size], y_seq[train_size:]
+    
+    # Model Configuration
+    model = build_lstm_model((X_train.shape[1], X_train.shape[2]))
+    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+    
+    # Training with callbacks
+    early_stop = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
+    lr_callback = LearningRateScheduler(lr_scheduler)
+    
+    history = model.fit(
+        X_train, y_train,
+        validation_data=(X_test, y_test),
+        epochs=150,
+        batch_size=64,
+        callbacks=[early_stop, lr_callback],
+        verbose=1
+    )
+    
+    # Evaluation
+    y_pred = model.predict(X_test)
+    y_test_actual = scaler_y.inverse_transform(y_test)
+    y_pred_actual = scaler_y.inverse_transform(y_pred)
+    
+    print("\nEvaluation Metrics:")
+    print(f"MSE: {mean_squared_error(y_test_actual, y_pred_actual):.2f}")
+    print(f"MAE: {mean_absolute_error(y_test_actual, y_pred_actual):.2f}")
+    print(f"R²: {r2_score(y_test_actual, y_pred_actual):.2f}")
 
 # 19. Plot training and validation loss
 plt.figure(figsize=(10, 6))
@@ -168,6 +238,8 @@ future_data.rename(columns={
     'yhat_wind': 'wind_speed_100m (km/h)',
     'yhat_load': 'total-consumption'
 }, inplace=True)
+future_data.set_index('ds', inplace=True)
+future_data = prepare_future_data(future_data, data)
 
 # Add rolling averages
 future_data['Rolling_Temp_24h'] = future_data['temperature_2m'].rolling(24).mean()
@@ -194,7 +266,7 @@ future_predictions_df = pd.DataFrame({
     'StartDateTime': future_dates[time_steps-1:],
     'Predicted Price [Euro/MWh]': future_predictions.flatten()
 })
-future_predictions_df.to_csv('custom_predictions.csv', index=False)
+# future_predictions_df.to_csv('custom_predictions.csv', index=False)
 
 # ----- Comparison with Actual Data -----
 actual_data = pd.DataFrame({
