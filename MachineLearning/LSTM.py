@@ -252,6 +252,7 @@ future_data.bfill(inplace=True)
 future_data_scaled = scaler_X.transform(future_data[features])
 
 # Prepare sequences
+time_steps = 24 
 future_seq = []
 for i in range(len(future_data_scaled) - time_steps + 1):
     future_seq.append(future_data_scaled[i:i+time_steps])
