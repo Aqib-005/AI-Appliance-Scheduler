@@ -309,7 +309,7 @@ actual_data = pd.DataFrame({
 })
 actual_data['StartDateTime'] = pd.to_datetime(actual_data['StartDateTime'])
 
-# Merge predictions and actual data on StartDateTime
+# Merge predictions and actual data
 comparison_df = pd.merge(future_predictions_df, actual_data, on='StartDateTime', how='inner')
 
 if comparison_df.empty:
@@ -319,12 +319,13 @@ else:
     mae = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
     r2 = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
     rmse = np.sqrt(mse)
+
     print("Evaluation Metrics:")
     print(f"Mean Squared Error: {mse:.4f}")
     print(f"Mean Absolute Error: {mae:.4f}")
     print(f"R-squared: {r2:.4f}")
     print(f"Root Mean Squared Error: {rmse:.4f}")
-    
+
     # Plot predicted vs actual prices
     plt.figure(figsize=(12, 6))
     plt.plot(comparison_df['StartDateTime'], comparison_df['Predicted Price [Euro/MWh]'], label='Predicted', marker='o')
@@ -335,7 +336,7 @@ else:
     plt.legend()
     plt.grid(True)
     plt.show()
-    
+
     # Plot residuals
     comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
     plt.figure(figsize=(12, 6))

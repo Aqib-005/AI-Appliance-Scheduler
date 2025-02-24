@@ -144,121 +144,187 @@ def monte_carlo_predict(model: Sequential,
     predictions = np.array(predictions)
     return np.median(predictions, axis=0), np.std(predictions, axis=0)
 
-# Main Execution Flow
-if __name__ == "__main__":
-    # Configuration
-    PREDICTION_START = '2025-01-20'
-    PREDICTION_END = '2025-01-26'
-    FEATURES = [
-    'temperature_2m', 'total-consumption', 'wind_speed_100m (km/h)',
-    'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
-    'price_lag_1', 'price_lag_24', 'price_lag_48',
-    'temperature_2m_roll24_mean', 'total-consumption_roll24_mean',
-    'wind_temp', 'temp_load'
-    ]
-    TARGET = 'price'
+def generate_future_features(train_df: pd.DataFrame,
+                            start: str,
+                            end: str) -> pd.DataFrame:
+    """Generate future features for prediction period"""
+    # 1. Create base datetime index
+    future_dates = pd.date_range(start, end, freq='H')
+    future_df = pd.DataFrame({'datetime': future_dates})
     
-    # Load and prepare data
-    full_df = load_and_preprocess("data/merged-data.csv")
-    train_df, test_df = temporal_split(full_df, PREDICTION_START)
-    
-    # Feature engineering
-    train_df = create_temporal_features(train_df)
-    test_df = create_temporal_features(test_df)
-    
-    # Scaling
-    scaler_x = StandardScaler()
-    scaler_y = MinMaxScaler()
-    
-    X_train = scaler_x.fit_transform(train_df[FEATURES])
-    y_train = scaler_y.fit_transform(train_df[[TARGET]])
-    X_test = scaler_x.transform(test_df[FEATURES])
-    y_test = scaler_y.transform(test_df[[TARGET]])
-    
-    # Sequence generation
-    def create_sequences(X: np.ndarray, y: np.ndarray, window: int = 24) -> Tuple[np.ndarray, np.ndarray]:
-        X_seq, y_seq = [], []
-        for i in range(len(X) - window):
-            X_seq.append(X[i:i+window])
-            y_seq.append(y[i+window])
-        return np.array(X_seq), np.array(y_seq)
-    
-    X_train_seq, y_train_seq = create_sequences(X_train, y_train)
-    X_test_seq, y_test_seq = create_sequences(X_test, y_test)
-    
-    # Model training
-    model = build_temporal_model((X_train_seq.shape[1], X_train_seq.shape[2]))
-    history = model.fit(
-        X_train_seq, y_train_seq,
-        validation_data=(X_test_seq, y_test_seq),
-        epochs=200,
-        batch_size=128,
-        callbacks=[
-            EarlyStopping(patience=20, restore_best_weights=True),
-            ReduceLROnPlateau(factor=0.2, patience=10)
-        ],
-        verbose=1
-    )
-    
-    # Temporal validation
-    test_pred = model.predict(X_test_seq)
-    test_pred = scaler_y.inverse_transform(test_pred)
-    test_true = scaler_y.inverse_transform(y_test_seq)
-    
-    print(f"Test MAE: {mean_absolute_error(test_true, test_pred):.2f}")
-    print(f"Test R²: {r2_score(test_true, test_pred):.2f}")
-    
-    # Future prediction pipeline
-    forecast_data = []
-    for feature in ['temperature_2m', 'total-consumption', 'wind_speed_100m (km/h)']:
-        fcst = forecast_prophet(train_df, feature, PREDICTION_START, PREDICTION_END)
-        forecast_data.append(fcst[['ds', 'yhat', 'yhat_lower', 'yhat_upper']])
-    
-    # Merge forecasts
-    future_df = forecast_data[0][['ds']]
-    for idx, fcst in enumerate(forecast_data):
-        future_df = future_df.merge(
-            fcst[['ds', 'yhat']].rename(columns={'yhat': FEATURES[idx]}),
-            on='ds'
-        )
-    
-    # Add temporal features
-    future_df['datetime'] = pd.to_datetime(future_df['ds'])
+    # 2. Add temporal features
     future_df['dow'] = future_df['datetime'].dt.dayofweek
     future_df['hour_sin'] = np.sin(2 * np.pi * future_df['datetime'].dt.hour / 24)
     future_df['hour_cos'] = np.cos(2 * np.pi * future_df['datetime'].dt.hour / 24)
     future_df['dow_sin'] = np.sin(2 * np.pi * future_df['dow'] / 7)
     future_df['dow_cos'] = np.cos(2 * np.pi * future_df['dow'] / 7)
     
-    # Generate sequences for prediction
-    X_future = scaler_x.transform(future_df[FEATURES])
-    X_future_seq = np.array([X_future[i:i+24] for i in range(len(X_future) - 23)])
+    # 3. Forecast external features
+    for feature in ['temperature_2m', 'total-consumption', 'wind_speed_100m (km/h)']:
+        fcst = forecast_prophet(train_df, feature, start, end)
+        future_df[feature] = fcst['yhat'].values
     
-    # Monte Carlo prediction
-    pred_median, pred_std = monte_carlo_predict(model, X_future_seq, scaler_x)
-    pred_median = scaler_y.inverse_transform(pred_median)
-    pred_std = scaler_y.inverse_transform(pred_std)
+    # 4. Create lag/roll features from training data
+    last_prices = train_df['price'].values[-72:]
+    for lag in [1, 6, 24, 48, 72]:
+        future_df[f'price_lag_{lag}'] = np.concatenate([
+            last_prices[-lag:], 
+            np.full(len(future_df) - lag, np.nan)
+        ])[:len(future_df)].ffill().bfill().values
     
-    # Create final output
-    predictions = pd.DataFrame({
-        'datetime': future_df['datetime'].iloc[23:],
-        'predicted_price': pred_median.flatten(),
-        'uncertainty': pred_std.flatten()
-    })
+    # 5. Calculate rolling features
+    rolling_config = {
+        'temperature_2m': [6, 12, 24],
+        'total-consumption': [12, 24, 72],
+        'wind_speed_100m (km/h)': [6, 12]
+    }
     
-    # Visualization
-    plt.figure(figsize=(15, 6))
-    plt.plot(predictions['datetime'], predictions['predicted_price'], label='Forecast')
-    plt.fill_between(predictions['datetime'],
-                    predictions['predicted_price'] - 1.96*predictions['uncertainty'],
-                    predictions['predicted_price'] + 1.96*predictions['uncertainty'],
-                    alpha=0.2, label='95% CI')
-    plt.title(f"Energy Price Forecast {PREDICTION_START} to {PREDICTION_END}")
-    plt.xlabel("Date")
-    plt.ylabel("Price (EUR/MWh)")
-    plt.legend()
-    plt.grid()
-    plt.show()
+    for col, windows in rolling_config.items():
+        for window in windows:
+            future_df[f'{col}_roll{window}_mean'] = (
+                future_df[col].rolling(window, min_periods=1).mean()
+            )
+    
+    # 6. Interaction features
+    future_df['temp_load'] = future_df['temperature_2m'] * future_df['total-consumption']
+    future_df['wind_temp'] = future_df['wind_speed_100m (km/h)'] / (future_df['temperature_2m'] + 1e-6)
+    
+    return future_df.dropna().reset_index(drop=True)
+
+# Main Execution Flow
+if __name__ == "__main__":
+    # Configuration
+    PREDICTION_START = '2025-01-20'  # Update this based on your data
+    PREDICTION_END = '2025-01-26'
+    FEATURES = [
+        'temperature_2m', 'total-consumption', 'wind_speed_100m (km/h)',
+        'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
+        'price_lag_1', 'price_lag_24', 'price_lag_48',
+        'temperature_2m_roll24_mean', 'total-consumption_roll24_mean',
+        'wind_temp', 'temp_load'
+    ]
+    TARGET = 'price'
+
+    # 1. Load and validate data
+    full_df = load_and_preprocess("data/merged-data.csv")
+    print(f"Dataset date range: {full_df['datetime'].min()} to {full_df['datetime'].max()}")
+    
+    # 2. Temporal split validation
+    last_known_date = full_df['datetime'].max()
+    predict_future = pd.to_datetime(PREDICTION_START) > last_known_date
+    
+    if predict_future:
+        print("\n[Forecasting Future Prices]")
+        print("Generating future features...")
+        
+        # Use all data for training
+        train_df = create_temporal_features(full_df)
+        
+        # Scale data
+        scaler_x = StandardScaler()
+        scaler_y = MinMaxScaler()
+        X_train = scaler_x.fit_transform(train_df[FEATURES])
+        y_train = scaler_y.fit_transform(train_df[[TARGET]])
+        
+        # Create sequences
+        X_seq, y_seq = create_sequences(X_train, y_train)
+        
+        # Build and train model
+        print("Training model...")
+        model = build_temporal_model((X_seq.shape[1], X_seq.shape[2]))
+        model.fit(
+            X_seq, y_seq,
+            epochs=200,
+            batch_size=128,
+            callbacks=[
+                EarlyStopping(patience=20, restore_best_weights=True),
+                ReduceLROnPlateau(factor=0.2, patience=10)
+            ],
+            verbose=1
+        )
+        
+        # Generate future features
+        future_df = generate_future_features(train_df, PREDICTION_START, PREDICTION_END)
+        X_future = scaler_x.transform(future_df[FEATURES])
+        X_future_seq = np.array([X_future[i:i+24] for i in range(len(X_future) - 23)])
+        
+        # Predict with uncertainty
+        print("Making predictions...")
+        pred_median, pred_std = monte_carlo_predict(model, X_future_seq, scaler_x)
+        pred_median = scaler_y.inverse_transform(pred_median)
+        pred_std = scaler_y.inverse_transform(pred_std)
+        
+        # Create output
+        predictions = pd.DataFrame({
+            'datetime': pd.date_range(start=PREDICTION_START, end=PREDICTION_END, freq='H')[23:],
+            'predicted_price': pred_median.flatten(),
+            'uncertainty': pred_std.flatten()
+        })
+        
+        # Save results
+        predictions.to_csv('price_predictions.csv', index=False)
+        print(f"Predictions saved for {PREDICTION_START} to {PREDICTION_END}")
+        
+        # Visualization
+        plt.figure(figsize=(15, 6))
+        plt.plot(predictions['datetime'], predictions['predicted_price'], label='Forecast')
+        plt.fill_between(predictions['datetime'],
+                        predictions['predicted_price'] - 1.96*predictions['uncertainty'],
+                        predictions['predicted_price'] + 1.96*predictions['uncertainty'],
+                        alpha=0.2, label='95% CI')
+        plt.title(f"Energy Price Forecast {PREDICTION_START} to {PREDICTION_END}")
+        plt.xlabel("Date")
+        plt.ylabel("Price (EUR/MWh)")
+        plt.legend()
+        plt.grid()
+        plt.show()
+
+    else:
+        print("\n[Validating on Historical Data]")
+        # Temporal split
+        train_df, test_df = temporal_split(full_df, PREDICTION_START)
+        
+        # Feature engineering
+        train_df = create_temporal_features(train_df)
+        test_df = create_temporal_features(test_df)
+        
+        # Scaling
+        scaler_x = StandardScaler()
+        scaler_y = MinMaxScaler()
+        X_train = scaler_x.fit_transform(train_df[FEATURES])
+        y_train = scaler_y.fit_transform(train_df[[TARGET]])
+        X_test = scaler_x.transform(test_df[FEATURES])
+        y_test = scaler_y.transform(test_df[[TARGET]])
+        
+        # Create sequences
+        X_train_seq, y_train_seq = create_sequences(X_train, y_train)
+        X_test_seq, y_test_seq = create_sequences(X_test, y_test)
+        
+        # Train model
+        print("Training model...")
+        model = build_temporal_model((X_train_seq.shape[1], X_train_seq.shape[2]))
+        history = model.fit(
+            X_train_seq, y_train_seq,
+            validation_data=(X_test_seq, y_test_seq),
+            epochs=200,
+            batch_size=128,
+            callbacks=[
+                EarlyStopping(patience=20, restore_best_weights=True),
+                ReduceLROnPlateau(factor=0.2, patience=10)
+            ],
+            verbose=1
+        )
+        
+        # Evaluate
+        test_pred = model.predict(X_test_seq)
+        test_pred = scaler_y.inverse_transform(test_pred)
+        test_true = scaler_y.inverse_transform(y_test_seq)
+        
+        print("\nValidation Metrics:")
+        print(f"MAE: {mean_absolute_error(test_true, test_pred):.2f}")
+        print(f"RMSE: {np.sqrt(mean_squared_error(test_true, test_pred)):.2f}")
+        print(f"R²: {r2_score(test_true, test_pred):.2f}")
+
 
 # # ----- Forecasting for the Coming Week using Prophet -----
 
