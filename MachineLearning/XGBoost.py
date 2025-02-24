@@ -10,37 +10,50 @@ import optuna
 from optuna.samplers import TPESampler
 import joblib
 
-# Load the data
+# 1. Load the data
 data = pd.read_csv("data/merged-data.csv")
 
-# Data cleaning and preprocessing
-data['Price Germany/Luxembourg [Euro/MWh]'] = data['Price Germany/Luxembourg [Euro/MWh]'].replace({',': ''}, regex=True).astype(float)
-data['Total (grid consumption) [MWh]'] = data['Total (grid consumption) [MWh]'].replace({',': ''}, regex=True).astype(float)
+# 2. Data cleaning and preprocessing
+# Rename columns for consistency
+data.rename(columns={
+    'start date/time': 'StartDateTime',
+    'day of the week': 'DayOfWeek',
+    'day-price': 'Price',
+    'Total (grid consumption) [MWh]': 'total-consumption',
+    'temperature_2m (°C)': 'temperature_2m'
+}, inplace=True)
 
-# Convert Start date/time to datetime and extract useful time features
-data['Start date/time'] = pd.to_datetime(data['Start date/time'], dayfirst=True)
-data['Year'] = data['Start date/time'].dt.year
-data['Month'] = data['Start date/time'].dt.month
-data['Day'] = data['Start date/time'].dt.day
-data['Hour'] = data['Start date/time'].dt.hour
-data['DayOfWeek'] = data['Start date/time'].dt.dayofweek
+# Convert Price and total-consumption to numeric (remove commas if needed)
+data['Price'] = data['Price'].replace({',': ''}, regex=True).astype(float)
+data['total-consumption'] = data['total-consumption'].replace({',': ''}, regex=True).astype(float)
 
-# lagged features for target variable
-data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
+# Convert StartDateTime to datetime and sort
+data['StartDateTime'] = pd.to_datetime(data['StartDateTime'], dayfirst=True)
+data = data.sort_values('StartDateTime').reset_index(drop=True)
 
-# Add rolling averages for features
-data['Rolling_Temp_24h'] = data['temperature_2m (°C)'].rolling(window=24).mean()
+# Extract time features
+data['Year'] = data['StartDateTime'].dt.year
+data['Month'] = data['StartDateTime'].dt.month
+data['Day'] = data['StartDateTime'].dt.day
+data['Hour'] = data['StartDateTime'].dt.hour
+data['DayOfWeek'] = data['StartDateTime'].dt.dayofweek  # Monday=0, Sunday=6
+
+# Create lagged feature for Price
+data['Lag_Price'] = data['Price'].shift(1)
+
+# Add rolling averages for features (24-hour window)
+data['Rolling_Temp_24h'] = data['temperature_2m'].rolling(window=24).mean()
 data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(window=24).mean()
-data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
+data['Rolling_Load_24h'] = data['total-consumption'].rolling(window=24).mean()
 
-# Drop rows with missing values after lagging and rolling
+# Drop rows with missing values after lagging/rolling
 data = data.dropna()
 
-# Feature selection
+# 3. Feature selection
 features = [
-    'temperature_2m (°C)', 
+    'temperature_2m', 
     'wind_speed_100m (km/h)', 
-    'Total (grid consumption) [MWh]', 
+    'total-consumption', 
     'Day', 
     'Hour', 
     'DayOfWeek',
@@ -49,7 +62,7 @@ features = [
     'Rolling_Load_24h',
     'Lag_Price'
 ]
-target = 'Price Germany/Luxembourg [Euro/MWh]'
+target = 'Price'
 
 # Subset the data
 X = data[features]
@@ -59,10 +72,10 @@ y = data[target]
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
-# TimeSeriesSplit for crossvalidation
+# Use TimeSeriesSplit for cross-validation
 tscv = TimeSeriesSplit(n_splits=5)
 
-# Define the objective function for Optuna
+# 4. Define the objective function for Optuna tuning
 def objective(trial):
     params = {
         'n_estimators': trial.suggest_int('n_estimators', 50, 300),
@@ -78,50 +91,33 @@ def objective(trial):
         'eval_metric': 'rmse',
         'early_stopping_rounds': 50
     }
-
     scores = []
     for train_index, val_index in tscv.split(X_scaled):
         X_train, X_val = X_scaled[train_index], X_scaled[val_index]
         y_train, y_val = y.iloc[train_index], y.iloc[val_index]
-
-        # Initialize the model
         model = xgb.XGBRegressor(**params)
-
-        # Fit the model with early stopping
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            verbose=False
-        )
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         y_pred = model.predict(X_val)
         scores.append(mean_squared_error(y_val, y_pred))
-
     return np.mean(scores)
 
-# Bayesian Optimization with Optuna
 study = optuna.create_study(direction='minimize', sampler=TPESampler(seed=42))
 study.optimize(objective, n_trials=50)
-
-# Get the best parameters
 best_params = study.best_params
 print(f"Best Parameters: {best_params}")
 
-# Train the final model with the best parameters
+# Train final XGBoost model with best parameters
 best_xgb = xgb.XGBRegressor(**best_params, random_state=42)
 best_xgb.fit(X_scaled, y)
 
-# Evaluate the model using the last fold of TimeSeriesSplit
+# Evaluate using the last fold of TimeSeriesSplit
 train_index, test_index = list(tscv.split(X_scaled))[-1]
 X_train, X_test = X_scaled[train_index], X_scaled[test_index]
 y_train, y_test = y.iloc[train_index], y.iloc[test_index]
-
 y_pred = best_xgb.predict(X_test)
-
-# Evaluation metrics
 rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 mae = mean_absolute_error(y_test, y_pred)
 r2 = r2_score(y_test, y_pred)
-
 print("Evaluation Metrics:")
 print(f"RMSE: {rmse}")
 print(f"MAE: {mae}")
@@ -131,7 +127,6 @@ print(f"R²: {r2}")
 feature_importance = best_xgb.feature_importances_
 feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': feature_importance})
 feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False)
-
 plt.figure(figsize=(10, 6))
 plt.barh(feature_importance_df['Feature'], feature_importance_df['Importance'])
 plt.xlabel('Importance')
@@ -139,194 +134,215 @@ plt.ylabel('Feature')
 plt.title('Feature Importance')
 plt.show()
 
-# Predict for the coming week
-last_date = data['Start date/time'].max()
-future_dates = pd.date_range(start=last_date + pd.Timedelta(hours=1), periods=7*24, freq='h')  # Use 'h' instead of 'H'
+# ----- Forecasting for the Coming Week using Prophet -----
 
-# Create future DataFrame
+# Best course of action when your training data ends on 01-01-2025 and you need forecasts for 2025-01-20 to 2025-01-26:
+# Instead of manually updating the database every week, forecast the missing feature values (e.g., temperature, wind, consumption)
+# using Prophet. This way, you generate the regressors required for your XGBoost model over the desired forecast period.
+
+def forecast_feature(data, feature, start_date, end_date):
+    # Prepare data for Prophet: use StartDateTime and the desired feature
+    feature_data = data[['StartDateTime', feature]].rename(columns={'StartDateTime': 'ds', feature: 'y'})
+    model_prophet = Prophet()
+    model_prophet.fit(feature_data)
+    future_dates = pd.date_range(start=start_date, end=end_date, freq='h')
+    future = pd.DataFrame({'ds': future_dates})
+    forecast = model_prophet.predict(future)
+    return forecast['yhat'].values
+
+# Define the desired forecast period (week from 2025-01-20 to 2025-01-26)
+start_date = '2025-01-20 00:00:00'
+end_date = '2025-01-26 23:00:00'
+future_dates = pd.date_range(start=start_date, end=end_date, freq='h')
+
+# Create future DataFrame with time features
 future_data = pd.DataFrame(index=future_dates)
 future_data['Year'] = future_data.index.year
 future_data['Month'] = future_data.index.month
 future_data['Day'] = future_data.index.day
 future_data['Hour'] = future_data.index.hour
-future_data['DayOfWeek'] = future_data.index.dayofweek  # Add day of the week
+future_data['DayOfWeek'] = future_data.index.dayofweek  # Monday=0, Sunday=6
 
-# Initialize Lag_Price with the last observed price
-future_data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].iloc[-1]
+# Initialize Lag_Price with the last observed Price
+future_data['Lag_Price'] = data['Price'].iloc[-1]
 
-#Forecast weather data (temperature and wind speed) using Prophet
-def forecast_feature(data, feature, periods=7*24):
-    # Prepare data for Prophet
-    feature_data = data[['Start date/time', feature]].rename(
-        columns={'Start date/time': 'ds', feature: 'y'}
-    )
-    
-    # Train Prophet model
-    model = Prophet()
-    model.fit(feature_data)
-    
-    # Forecast for future dates
-    future = model.make_future_dataframe(periods=periods, freq='H')
-    forecast = model.predict(future)
-    
-    return forecast['yhat'].tail(periods).values
+# Forecast regressors using Prophet for the desired period
+future_data['temperature_2m'] = forecast_feature(data, 'temperature_2m', start_date, end_date)
+future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)', start_date, end_date)
+future_data['total-consumption'] = forecast_feature(data, 'total-consumption', start_date, end_date)
 
-# Forecast temperature and wind speed
-future_data['temperature_2m (°C)'] = forecast_feature(data, 'temperature_2m (°C)')
-future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)')
-
-# Forecast grid cons using Prophet
-future_data['Total (grid consumption) [MWh]'] = forecast_feature(data, 'Total (grid consumption) [MWh]')
-
-# Add rolling averages for future data
-future_data['Rolling_Temp_24h'] = future_data['temperature_2m (°C)'].rolling(window=24).mean()
+# Compute rolling averages for future data
+future_data['Rolling_Temp_24h'] = future_data['temperature_2m'].rolling(window=24).mean()
 future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(window=24).mean()
-future_data['Rolling_Load_24h'] = future_data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
+future_data['Rolling_Load_24h'] = future_data['total-consumption'].rolling(window=24).mean()
+future_data = future_data.bfill()  # backfill any NaN values
 
-# Fill NaN values in rolling averages 
-future_data.fillna(method='bfill', inplace=True)
-
-# Iteratively predict future prices
-xgb_future_pred = []
-for i in range(len(future_data)):
-    # Scale the features for the current timestep
-    future_data_scaled = scaler.transform(future_data.iloc[i:i+1][features])
-    
-    # Predict the price for the current timestep
-    pred = best_xgb.predict(future_data_scaled)
-    xgb_future_pred.append(pred[0])
-    
-    # Update Lag_Price for the next timestep
-    if i < len(future_data) - 1: 
-        future_data.at[future_data.index[i+1], 'Lag_Price'] = pred[0]
-
-# Create a DataFrame for the predictions
-future_predictions_df = pd.DataFrame({
-    'Start date/time': future_dates,  
-    'Predicted Price [Euro/MWh]': xgb_future_pred  
+# Ensure future_data has all the required features in the same order
+# Note: our feature list uses 'temperature_2m', 'wind_speed_100m (km/h)', 'total-consumption',
+# 'Day', 'Hour', 'DayOfWeek', 'Rolling_Temp_24h', 'Rolling_Wind_24h', 'Rolling_Load_24h', 'Lag_Price'
+# If needed, adjust the column names in future_data accordingly.
+future_data = future_data.rename(columns={
+    'temperature_2m': 'temperature_2m',
+    'wind_speed_100m (km/h)': 'wind_speed_100m (km/h)',
+    'total-consumption': 'total-consumption'
 })
 
-# Print the predictions with dates
+# Scale future data using the same scaler
+future_data_scaled = scaler.transform(future_data[features])
+
+# Iteratively predict future prices using the trained XGBoost model
+xgb_future_pred = []
+for i in range(len(future_data_scaled)):
+    # For each timestep, predict using the current feature vector
+    pred = best_xgb.predict(future_data_scaled[i:i+1])
+    xgb_future_pred.append(pred[0])
+    # Update Lag_Price for next timestep (simulate sequential forecasting)
+    if i < len(future_data_scaled) - 1:
+        future_data.at[future_data.index[i+1], 'Lag_Price'] = pred[0]
+
+# Create a DataFrame for future predictions
+future_predictions_df = pd.DataFrame({
+    'StartDateTime': future_dates,
+    'Predicted Price [Euro/MWh]': xgb_future_pred
+})
+
 print("Predictions for the coming week:")
 print(future_predictions_df)
 
-# Load actual data
+# Load sample actual data (update with your actual data if available)
 actual_data = pd.DataFrame({
-    'Start date/time': [
-        '2024-10-01 00:00:00', '2024-10-01 01:00:00', '2024-10-01 02:00:00', 
-        '2024-10-01 03:00:00', '2024-10-01 04:00:00', '2024-10-01 05:00:00', 
-        '2024-10-01 06:00:00', '2024-10-01 07:00:00', '2024-10-01 08:00:00', 
-        '2024-10-01 09:00:00', '2024-10-01 10:00:00', '2024-10-01 11:00:00', 
-        '2024-10-01 12:00:00', '2024-10-01 13:00:00', '2024-10-01 14:00:00', 
-        '2024-10-01 15:00:00', '2024-10-01 16:00:00', '2024-10-01 17:00:00', 
-        '2024-10-01 18:00:00', '2024-10-01 19:00:00', '2024-10-01 20:00:00', 
-        '2024-10-01 21:00:00', '2024-10-01 22:00:00', '2024-10-01 23:00:00', 
-        '2024-10-02 00:00:00', '2024-10-02 01:00:00', '2024-10-02 02:00:00', 
-        '2024-10-02 03:00:00', '2024-10-02 04:00:00', '2024-10-02 05:00:00', 
-        '2024-10-02 06:00:00', '2024-10-02 07:00:00', '2024-10-02 08:00:00', 
-        '2024-10-02 09:00:00', '2024-10-02 10:00:00', '2024-10-02 11:00:00', 
-        '2024-10-02 12:00:00', '2024-10-02 13:00:00', '2024-10-02 14:00:00', 
-        '2024-10-02 15:00:00', '2024-10-02 16:00:00', '2024-10-02 17:00:00', 
-        '2024-10-02 18:00:00', '2024-10-02 19:00:00', '2024-10-02 20:00:00', 
-        '2024-10-02 21:00:00', '2024-10-02 22:00:00', '2024-10-02 23:00:00', 
-        '2024-10-03 00:00:00', '2024-10-03 01:00:00', '2024-10-03 02:00:00', 
-        '2024-10-03 03:00:00', '2024-10-03 04:00:00', '2024-10-03 05:00:00', 
-        '2024-10-03 06:00:00', '2024-10-03 07:00:00', '2024-10-03 08:00:00', 
-        '2024-10-03 09:00:00', '2024-10-03 10:00:00', '2024-10-03 11:00:00', 
-        '2024-10-03 12:00:00', '2024-10-03 13:00:00', '2024-10-03 14:00:00', 
-        '2024-10-03 15:00:00', '2024-10-03 16:00:00', '2024-10-03 17:00:00', 
-        '2024-10-03 18:00:00', '2024-10-03 19:00:00', '2024-10-03 20:00:00', 
-        '2024-10-03 21:00:00', '2024-10-03 22:00:00', '2024-10-03 23:00:00', 
-        '2024-10-04 00:00:00', '2024-10-04 01:00:00', '2024-10-04 02:00:00', 
-        '2024-10-04 03:00:00', '2024-10-04 04:00:00', '2024-10-04 05:00:00', 
-        '2024-10-04 06:00:00', '2024-10-04 07:00:00', '2024-10-04 08:00:00', 
-        '2024-10-04 09:00:00', '2024-10-04 10:00:00', '2024-10-04 11:00:00', 
-        '2024-10-04 12:00:00', '2024-10-04 13:00:00', '2024-10-04 14:00:00', 
-        '2024-10-04 15:00:00', '2024-10-04 16:00:00', '2024-10-04 17:00:00', 
-        '2024-10-04 18:00:00', '2024-10-04 19:00:00', '2024-10-04 20:00:00', 
-        '2024-10-04 21:00:00', '2024-10-04 22:00:00', '2024-10-04 23:00:00', 
-        '2024-10-05 00:00:00', '2024-10-05 01:00:00', '2024-10-05 02:00:00', 
-        '2024-10-05 03:00:00', '2024-10-05 04:00:00', '2024-10-05 05:00:00', 
-        '2024-10-05 06:00:00', '2024-10-05 07:00:00', '2024-10-05 08:00:00', 
-        '2024-10-05 09:00:00', '2024-10-05 10:00:00', '2024-10-05 11:00:00', 
-        '2024-10-05 12:00:00', '2024-10-05 13:00:00', '2024-10-05 14:00:00', 
-        '2024-10-05 15:00:00', '2024-10-05 16:00:00', '2024-10-05 17:00:00', 
-        '2024-10-05 18:00:00', '2024-10-05 19:00:00', '2024-10-05 20:00:00', 
-        '2024-10-05 21:00:00', '2024-10-05 22:00:00', '2024-10-05 23:00:00', 
-        '2024-10-06 00:00:00', '2024-10-06 01:00:00', '2024-10-06 02:00:00', 
-        '2024-10-06 03:00:00', '2024-10-06 04:00:00', '2024-10-06 05:00:00', 
-        '2024-10-06 06:00:00', '2024-10-06 07:00:00', '2024-10-06 08:00:00', 
-        '2024-10-06 09:00:00', '2024-10-06 10:00:00', '2024-10-06 11:00:00', 
-        '2024-10-06 12:00:00', '2024-10-06 13:00:00', '2024-10-06 14:00:00', 
-        '2024-10-06 15:00:00', '2024-10-06 16:00:00', '2024-10-06 17:00:00', 
-        '2024-10-06 18:00:00', '2024-10-06 19:00:00', '2024-10-06 20:00:00', 
-        '2024-10-06 21:00:00', '2024-10-06 22:00:00', '2024-10-06 23:00:00', 
-        '2024-10-07 00:00:00', '2024-10-07 01:00:00', '2024-10-07 02:00:00', 
-        '2024-10-07 03:00:00', '2024-10-07 04:00:00', '2024-10-07 05:00:00', 
-        '2024-10-07 06:00:00', '2024-10-07 07:00:00', '2024-10-07 08:00:00', 
-        '2024-10-07 09:00:00', '2024-10-07 10:00:00', '2024-10-07 11:00:00', 
-        '2024-10-07 12:00:00', '2024-10-07 13:00:00', '2024-10-07 14:00:00', 
-        '2024-10-07 15:00:00', '2024-10-07 16:00:00', '2024-10-07 17:00:00', 
-        '2024-10-07 18:00:00', '2024-10-07 19:00:00', '2024-10-07 20:00:00', 
-        '2024-10-07 21:00:00', '2024-10-07 22:00:00', '2024-10-07 23:00:00'
+    'StartDateTime': [
+        # Jan 20, 2025
+        '2025-01-20 00:00:00', '2025-01-20 01:00:00', '2025-01-20 02:00:00', 
+        '2025-01-20 03:00:00', '2025-01-20 04:00:00', '2025-01-20 05:00:00', 
+        '2025-01-20 06:00:00', '2025-01-20 07:00:00', '2025-01-20 08:00:00', 
+        '2025-01-20 09:00:00', '2025-01-20 10:00:00', '2025-01-20 11:00:00', 
+        '2025-01-20 12:00:00', '2025-01-20 13:00:00', '2025-01-20 14:00:00', 
+        '2025-01-20 15:00:00', '2025-01-20 16:00:00', '2025-01-20 17:00:00', 
+        '2025-01-20 18:00:00', '2025-01-20 19:00:00', '2025-01-20 20:00:00', 
+        '2025-01-20 21:00:00', '2025-01-20 22:00:00', '2025-01-20 23:00:00',
+        # Jan 21, 2025
+        '2025-01-21 00:00:00', '2025-01-21 01:00:00', '2025-01-21 02:00:00', 
+        '2025-01-21 03:00:00', '2025-01-21 04:00:00', '2025-01-21 05:00:00', 
+        '2025-01-21 06:00:00', '2025-01-21 07:00:00', '2025-01-21 08:00:00', 
+        '2025-01-21 09:00:00', '2025-01-21 10:00:00', '2025-01-21 11:00:00', 
+        '2025-01-21 12:00:00', '2025-01-21 13:00:00', '2025-01-21 14:00:00', 
+        '2025-01-21 15:00:00', '2025-01-21 16:00:00', '2025-01-21 17:00:00', 
+        '2025-01-21 18:00:00', '2025-01-21 19:00:00', '2025-01-21 20:00:00', 
+        '2025-01-21 21:00:00', '2025-01-21 22:00:00', '2025-01-21 23:00:00',
+        # Jan 22, 2025
+        '2025-01-22 00:00:00', '2025-01-22 01:00:00', '2025-01-22 02:00:00', 
+        '2025-01-22 03:00:00', '2025-01-22 04:00:00', '2025-01-22 05:00:00', 
+        '2025-01-22 06:00:00', '2025-01-22 07:00:00', '2025-01-22 08:00:00', 
+        '2025-01-22 09:00:00', '2025-01-22 10:00:00', '2025-01-22 11:00:00', 
+        '2025-01-22 12:00:00', '2025-01-22 13:00:00', '2025-01-22 14:00:00', 
+        '2025-01-22 15:00:00', '2025-01-22 16:00:00', '2025-01-22 17:00:00', 
+        '2025-01-22 18:00:00', '2025-01-22 19:00:00', '2025-01-22 20:00:00', 
+        '2025-01-22 21:00:00', '2025-01-22 22:00:00', '2025-01-22 23:00:00',
+        # Jan 23, 2025
+        '2025-01-23 00:00:00', '2025-01-23 01:00:00', '2025-01-23 02:00:00', 
+        '2025-01-23 03:00:00', '2025-01-23 04:00:00', '2025-01-23 05:00:00', 
+        '2025-01-23 06:00:00', '2025-01-23 07:00:00', '2025-01-23 08:00:00', 
+        '2025-01-23 09:00:00', '2025-01-23 10:00:00', '2025-01-23 11:00:00', 
+        '2025-01-23 12:00:00', '2025-01-23 13:00:00', '2025-01-23 14:00:00', 
+        '2025-01-23 15:00:00', '2025-01-23 16:00:00', '2025-01-23 17:00:00', 
+        '2025-01-23 18:00:00', '2025-01-23 19:00:00', '2025-01-23 20:00:00', 
+        '2025-01-23 21:00:00', '2025-01-23 22:00:00', '2025-01-23 23:00:00',
+        # Jan 24, 2025
+        '2025-01-24 00:00:00', '2025-01-24 01:00:00', '2025-01-24 02:00:00', 
+        '2025-01-24 03:00:00', '2025-01-24 04:00:00', '2025-01-24 05:00:00', 
+        '2025-01-24 06:00:00', '2025-01-24 07:00:00', '2025-01-24 08:00:00', 
+        '2025-01-24 09:00:00', '2025-01-24 10:00:00', '2025-01-24 11:00:00', 
+        '2025-01-24 12:00:00', '2025-01-24 13:00:00', '2025-01-24 14:00:00', 
+        '2025-01-24 15:00:00', '2025-01-24 16:00:00', '2025-01-24 17:00:00', 
+        '2025-01-24 18:00:00', '2025-01-24 19:00:00', '2025-01-24 20:00:00', 
+        '2025-01-24 21:00:00', '2025-01-24 22:00:00', '2025-01-24 23:00:00',
+        # Jan 25, 2025
+        '2025-01-25 00:00:00', '2025-01-25 01:00:00', '2025-01-25 02:00:00', 
+        '2025-01-25 03:00:00', '2025-01-25 04:00:00', '2025-01-25 05:00:00', 
+        '2025-01-25 06:00:00', '2025-01-25 07:00:00', '2025-01-25 08:00:00', 
+        '2025-01-25 09:00:00', '2025-01-25 10:00:00', '2025-01-25 11:00:00', 
+        '2025-01-25 12:00:00', '2025-01-25 13:00:00', '2025-01-25 14:00:00', 
+        '2025-01-25 15:00:00', '2025-01-25 16:00:00', '2025-01-25 17:00:00', 
+        '2025-01-25 18:00:00', '2025-01-25 19:00:00', '2025-01-25 20:00:00', 
+        '2025-01-25 21:00:00', '2025-01-25 22:00:00', '2025-01-25 23:00:00',
+        # Jan 26, 2025
+        '2025-01-26 00:00:00', '2025-01-26 01:00:00', '2025-01-26 02:00:00', 
+        '2025-01-26 03:00:00', '2025-01-26 04:00:00', '2025-01-26 05:00:00', 
+        '2025-01-26 06:00:00', '2025-01-26 07:00:00', '2025-01-26 08:00:00', 
+        '2025-01-26 09:00:00', '2025-01-26 10:00:00', '2025-01-26 11:00:00', 
+        '2025-01-26 12:00:00', '2025-01-26 13:00:00', '2025-01-26 14:00:00', 
+        '2025-01-26 15:00:00', '2025-01-26 16:00:00', '2025-01-26 17:00:00', 
+        '2025-01-26 18:00:00', '2025-01-26 19:00:00', '2025-01-26 20:00:00', 
+        '2025-01-26 21:00:00', '2025-01-26 22:00:00', '2025-01-26 23:00:00'
     ],
     'Actual Price [Euro/MWh]': [
-        3.21, 0.07, 0.05, 0.02, 0.09, 6.80, 63.96, 103.35, 114.98, 100.41, 
-        76.48, 68.21, 58.60, 55.66, 56.51, 62.18, 98.94, 109.58, 133.90, 
-        136.51, 118.54, 92.30, 91.45, 76.24, 85.44, 80.88, 77.09, 74.93, 
-        77.14, 81.10, 96.53, 118.83, 135.70, 117.59, 103.21, 96.52, 90.45, 
-        86.44, 78.87, 82.07, 81.51, 100.10, 117.01, 130.07, 114.37, 96.54, 
-        93.30, 85.00, 67.33, 65.86, 65.14, 64.18, 63.98, 64.40, 65.43, 
-        73.37, 76.67, 72.90, 69.28, 63.04, 47.09, 33.98, 39.14, 51.36, 
-        66.04, 89.70, 110.07, 115.32, 108.28, 98.76, 90.96, 81.46, 73.90, 
-        72.52, 72.10, 72.00, 72.33, 77.10, 103.00, 126.54, 141.42, 116.27, 
-        100.09, 85.00, 75.07, 73.49, 75.82, 79.07, 89.80, 107.10, 131.97, 
-        149.02, 123.70, 99.90, 99.90, 90.00, 93.10, 84.64, 81.40, 75.54, 
-        75.72, 79.82, 86.20, 100.40, 110.62, 103.00, 82.42, 68.27, 51.44, 
-        38.88, 43.49, 62.92, 77.12, 99.48, 148.65, 143.28, 107.23, 96.56, 
-        85.23, 67.00, 67.04, 63.97, 62.83, 63.35, 62.71, 63.97, 63.41, 
-        72.81, 77.20, 66.06, 35.28, 16.68, 5.25, -0.01, -0.01, 0.20, 
-        59.60, 90.94, 106.30, 97.22, 72.98, 59.37, 58.69, 51.71, 34.58, 
-        35.34, 33.25, 30.15, 36.09, 46.73, 67.59, 100.92, 108.32, 91.86, 
-        66.09, 60.22, 54.11, 43.29, 55.00, 67.01, 97.90, 120.71, 237.65, 
-        229.53, 121.98, 99.93, 91.91, 79.12
+        # Jan 20, 2025
+        122.27, 119.44, 116.56, 114.41, 115.45, 127.54, 161.71, 276.48, 431.99, 
+        291.70, 236.29, 187.48, 176.00, 171.39, 191.85, 277.17, 402.12, 583.40, 
+        473.28, 295.57, 220.00, 170.00, 152.51, 137.98,
+        # Jan 21, 2025
+        127.52, 121.65, 116.67, 113.86, 113.54, 122.34, 142.20, 190.06, 248.32, 
+        211.68, 198.05, 161.50, 147.44, 142.83, 150.05, 173.43, 212.13, 301.15, 
+        251.93, 202.68, 174.84, 155.19, 138.60, 125.29,
+        # Jan 22, 2025
+        128.00, 125.06, 122.22, 121.66, 123.16, 128.32, 156.92, 208.25, 238.60, 
+        199.41, 179.06, 172.94, 165.00, 170.00, 179.92, 195.67, 199.04, 208.99, 
+        180.43, 167.08, 134.49, 127.78, 128.09, 114.68,
+        # Jan 23, 2025
+        113.70, 108.88, 105.58, 100.01, 97.59, 100.01, 106.41, 136.60, 159.03, 
+        155.42, 130.94, 116.10, 94.93, 88.56, 85.86, 89.80, 89.87, 106.75, 112.00, 
+        101.87, 86.36, 74.28, 75.68, 58.23,
+        # Jan 24, 2025
+        69.03, 58.16, 45.05, 40.60, 50.17, 73.20, 85.44, 109.16, 116.23, 96.34, 
+        88.90, 78.44, 76.48, 74.69, 74.51, 74.51, 75.25, 83.02, 88.59, 91.78, 
+        84.99, 80.79, 91.97, 86.29,
+        # Jan 25, 2025
+        59.04, 64.96, 63.55, 67.17, 76.77, 76.89, 79.32, 76.89, 88.99, 87.31, 
+        86.32, 88.15, 82.55, 81.98, 89.00, 111.07, 132.97, 145.85, 151.00, 147.53, 
+        137.60, 134.61, 132.26, 122.03,
+        # Jan 26, 2025
+        126.21, 115.79, 111.30, 106.85, 105.43, 107.86, 110.60, 117.62, 124.17, 
+        121.97, 105.51, 102.57, 96.73, 90.02, 92.52, 111.63, 125.92, 132.77, 118.94, 
+        90.32, 78.93, 68.26, 49.25, 23.89
     ]
 })
-actual_data['Start date/time'] = pd.to_datetime(actual_data['Start date/time'])
+actual_data['StartDateTime'] = pd.to_datetime(actual_data['StartDateTime'])
 
-# Merge predictions and actual data
-comparison_df = pd.merge(future_predictions_df, actual_data, on='Start date/time', suffixes=('_predicted', '_actual'))
+# Merge predictions and actual data on StartDateTime
+comparison_df = pd.merge(future_predictions_df, actual_data, on='StartDateTime', how='inner')
 
-# Calculate evaluation metrics
-mse = mean_squared_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
-mae = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
-r2 = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
-rmse = np.sqrt(mse)
-
-print("Evaluation Metrics:")
-print(f"Mean Squared Error: {mse:.4f}")
-print(f"Mean Absolute Error: {mae:.4f}")
-print(f"R-squared: {r2:.4f}")
-print(f"Root Mean Squared Error: {rmse:.4f}")
-
-# Plot predicted vs actual prices
-plt.figure(figsize=(12, 6))
-plt.plot(comparison_df['Start date/time'], comparison_df['Predicted Price [Euro/MWh]'], label='Predicted', marker='o')
-plt.plot(comparison_df['Start date/time'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
-plt.title('Predicted vs Actual Hourly Prices')
-plt.xlabel('Date/Time')
-plt.ylabel('Price [Euro/MWh]')
-plt.legend()
-plt.grid(True)
-plt.show()
-
-# Plot residuals
-comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
-plt.figure(figsize=(12, 6))
-plt.plot(comparison_df['Start date/time'], comparison_df['Residuals'], marker='o', color='red')
-plt.axhline(0, color='black', linestyle='--')
-plt.title('Residuals (Actual - Predicted)')
-plt.xlabel('Date/Time')
-plt.ylabel('Residuals [Euro/MWh]')
-plt.grid(True)
-plt.show()
+if comparison_df.empty:
+    print("No matching actual data available for the forecast period. Skipping future evaluation metrics.")
+else:
+    mse = mean_squared_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
+    mae = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
+    r2 = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
+    rmse = np.sqrt(mse)
+    print("Evaluation Metrics:")
+    print(f"Mean Squared Error: {mse:.4f}")
+    print(f"Mean Absolute Error: {mae:.4f}")
+    print(f"R-squared: {r2:.4f}")
+    print(f"Root Mean Squared Error: {rmse:.4f}")
+    
+    # Plot predicted vs actual prices
+    plt.figure(figsize=(12, 6))
+    plt.plot(comparison_df['StartDateTime'], comparison_df['Predicted Price [Euro/MWh]'], label='Predicted', marker='o')
+    plt.plot(comparison_df['StartDateTime'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
+    plt.title('Predicted vs Actual Hourly Prices')
+    plt.xlabel('StartDateTime')
+    plt.ylabel('Price [Euro/MWh]')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+    # Plot residuals
+    comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
+    plt.figure(figsize=(12, 6))
+    plt.plot(comparison_df['StartDateTime'], comparison_df['Residuals'], marker='o', color='red')
+    plt.axhline(0, color='black', linestyle='--')
+    plt.title('Residuals (Actual - Predicted)')
+    plt.xlabel('StartDateTime')
+    plt.ylabel('Residuals [Euro/MWh]')
+    plt.grid(True)
+    plt.show()
