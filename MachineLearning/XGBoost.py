@@ -5,7 +5,6 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import xgboost as xgb
 import matplotlib.pyplot as plt
-from prophet import Prophet
 import optuna
 from optuna.samplers import TPESampler
 import joblib
@@ -13,13 +12,22 @@ import joblib
 # 1. Load the data
 data = pd.read_csv("data/merged-data.csv")
 
+# (Optional) Fix mis-encoded characters in column names
+data.columns = data.columns.str.replace("Ã¸", "°")
+
 # 2. Data cleaning and preprocessing
-# Rename columns for consistency
+# Rename columns for consistency:
+#   - "start date/time" -> "StartDateTime"
+#   - "day of the week" -> "DayOfWeek"
+#   - "germany/luxembourg [?/mwh]" -> "Price"   (this is our target)
+#   - "total (grid load) [mwh]" -> "total-consumption"
+#   - "temperature_2m (°C)" -> "temperature_2m"
 data.rename(columns={
     'start date/time': 'StartDateTime',
     'day of the week': 'DayOfWeek',
-    'day-price': 'Price',
-    'Total (grid consumption) [MWh]': 'total-consumption',
+    'germany/luxembourg [?/mwh]': 'Price',
+    'total (grid load) [mwh]': 'total-consumption',
+    'temperature_2m (°c)': 'temperature_2m',
     'temperature_2m (°C)': 'temperature_2m'
 }, inplace=True)
 
@@ -134,82 +142,43 @@ plt.ylabel('Feature')
 plt.title('Feature Importance')
 plt.show()
 
-# ----- Forecasting for the Coming Week using Prophet -----
+# ----- Future Forecasting Using Merged Dataset -----
+# We assume merged-data.csv includes both historical and future rows.
+# The future rows already have forecasted regressors for weather and consumption, and Price is NaN.
+# We filter the desired forecast period and predict Price for those rows.
 
-# Best course of action when your training data ends on 01-01-2025 and you need forecasts for 2025-01-20 to 2025-01-26:
-# Instead of manually updating the database every week, forecast the missing feature values (e.g., temperature, wind, consumption)
-# using Prophet. This way, you generate the regressors required for your XGBoost model over the desired forecast period.
+# Load the merged dataset
+merged_data = pd.read_csv("data/merged-data.csv")
+merged_data.rename(columns={'start date/time': 'StartDateTime'}, inplace=True)
+merged_data['StartDateTime'] = pd.to_datetime(merged_data['StartDateTime'], dayfirst=True)
 
-def forecast_feature(data, feature, start_date, end_date):
-    # Prepare data for Prophet: use StartDateTime and the desired feature
-    feature_data = data[['StartDateTime', feature]].rename(columns={'StartDateTime': 'ds', feature: 'y'})
-    model_prophet = Prophet()
-    model_prophet.fit(feature_data)
-    future_dates = pd.date_range(start=start_date, end=end_date, freq='h')
-    future = pd.DataFrame({'ds': future_dates})
-    forecast = model_prophet.predict(future)
-    return forecast['yhat'].values
+# Define the forecast period: 2025-01-20 00:00:00 to 2025-01-26 23:00:00
+forecast_start = '2025-01-20 00:00:00'
+forecast_end = '2025-01-26 23:00:00'
+future_data = merged_data[(merged_data['StartDateTime'] >= forecast_start) & 
+                          (merged_data['StartDateTime'] <= forecast_end)]
 
-# Define the desired forecast period (week from 2025-01-20 to 2025-01-26)
-start_date = '2025-01-20 00:00:00'
-end_date = '2025-01-26 23:00:00'
-future_dates = pd.date_range(start=start_date, end=end_date, freq='h')
+# Select only future rows where Price is missing (NaN)
+future_data = future_data[future_data['Price'].isna()]
 
-# Create future DataFrame with time features
-future_data = pd.DataFrame(index=future_dates)
-future_data['Year'] = future_data.index.year
-future_data['Month'] = future_data.index.month
-future_data['Day'] = future_data.index.day
-future_data['Hour'] = future_data.index.hour
-future_data['DayOfWeek'] = future_data.index.dayofweek  # Monday=0, Sunday=6
+# Ensure these future rows contain the same engineered features as used in training
+future_features = future_data[features]
 
-# Initialize Lag_Price with the last observed Price
-future_data['Lag_Price'] = data['Price'].iloc[-1]
+# Scale future features using the same scaler
+future_features_scaled = scaler.transform(future_features)
 
-# Forecast regressors using Prophet for the desired period
-future_data['temperature_2m'] = forecast_feature(data, 'temperature_2m', start_date, end_date)
-future_data['wind_speed_100m (km/h)'] = forecast_feature(data, 'wind_speed_100m (km/h)', start_date, end_date)
-future_data['total-consumption'] = forecast_feature(data, 'total-consumption', start_date, end_date)
+# Predict future prices using the trained XGBoost model
+future_predictions = best_xgb.predict(future_features_scaled)
 
-# Compute rolling averages for future data
-future_data['Rolling_Temp_24h'] = future_data['temperature_2m'].rolling(window=24).mean()
-future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(window=24).mean()
-future_data['Rolling_Load_24h'] = future_data['total-consumption'].rolling(window=24).mean()
-future_data = future_data.bfill()  # backfill any NaN values
+# Add predictions to future_data DataFrame
+future_data['Predicted Price [Euro/MWh]'] = future_predictions
 
-# Ensure future_data has all the required features in the same order
-# Note: our feature list uses 'temperature_2m', 'wind_speed_100m (km/h)', 'total-consumption',
-# 'Day', 'Hour', 'DayOfWeek', 'Rolling_Temp_24h', 'Rolling_Wind_24h', 'Rolling_Load_24h', 'Lag_Price'
-# If needed, adjust the column names in future_data accordingly.
-future_data = future_data.rename(columns={
-    'temperature_2m': 'temperature_2m',
-    'wind_speed_100m (km/h)': 'wind_speed_100m (km/h)',
-    'total-consumption': 'total-consumption'
-})
+# Save predictions for the future period
+future_predictions_df = future_data[['StartDateTime', 'Predicted Price [Euro/MWh]']]
+future_predictions_df.to_csv('future_predictions_xgb.csv', index=False)
+print("Future predictions saved to future_predictions_xgb.csv")
 
-# Scale future data using the same scaler
-future_data_scaled = scaler.transform(future_data[features])
-
-# Iteratively predict future prices using the trained XGBoost model
-xgb_future_pred = []
-for i in range(len(future_data_scaled)):
-    # For each timestep, predict using the current feature vector
-    pred = best_xgb.predict(future_data_scaled[i:i+1])
-    xgb_future_pred.append(pred[0])
-    # Update Lag_Price for next timestep (simulate sequential forecasting)
-    if i < len(future_data_scaled) - 1:
-        future_data.at[future_data.index[i+1], 'Lag_Price'] = pred[0]
-
-# Create a DataFrame for future predictions
-future_predictions_df = pd.DataFrame({
-    'StartDateTime': future_dates,
-    'Predicted Price [Euro/MWh]': xgb_future_pred
-})
-
-print("Predictions for the coming week:")
-print(future_predictions_df)
-
-# Load sample actual data (update with your actual data if available)
+# Optionally, if you have actual future data, merge and evaluate:
 actual_data = pd.DataFrame({
     'StartDateTime': [
         # Jan 20, 2025
@@ -309,9 +278,7 @@ actual_data = pd.DataFrame({
 })
 actual_data['StartDateTime'] = pd.to_datetime(actual_data['StartDateTime'])
 
-# Merge predictions and actual data
 comparison_df = pd.merge(future_predictions_df, actual_data, on='StartDateTime', how='inner')
-
 if comparison_df.empty:
     print("No matching actual data available for the forecast period. Skipping future evaluation metrics.")
 else:
@@ -319,14 +286,12 @@ else:
     mae = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
     r2 = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
     rmse = np.sqrt(mse)
-
-    print("Evaluation Metrics:")
+    print("Evaluation Metrics on Future Data:")
     print(f"Mean Squared Error: {mse:.4f}")
     print(f"Mean Absolute Error: {mae:.4f}")
     print(f"R-squared: {r2:.4f}")
     print(f"Root Mean Squared Error: {rmse:.4f}")
-
-    # Plot predicted vs actual prices
+    
     plt.figure(figsize=(12, 6))
     plt.plot(comparison_df['StartDateTime'], comparison_df['Predicted Price [Euro/MWh]'], label='Predicted', marker='o')
     plt.plot(comparison_df['StartDateTime'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
@@ -336,8 +301,7 @@ else:
     plt.legend()
     plt.grid(True)
     plt.show()
-
-    # Plot residuals
+    
     comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
     plt.figure(figsize=(12, 6))
     plt.plot(comparison_df['StartDateTime'], comparison_df['Residuals'], marker='o', color='red')
