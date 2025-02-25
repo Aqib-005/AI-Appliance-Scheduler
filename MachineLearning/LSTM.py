@@ -152,7 +152,7 @@ def temporal_split(df: pd.DataFrame, test_start: str, buffer_days: int = 7):
     test = df[df['datetime'] >= test_start]
     
     return pd.concat([train, buffer]), test
-
+#w
 def build_temporal_model(input_shape):
     """Build LSTM model with attention"""
     model = Sequential([
