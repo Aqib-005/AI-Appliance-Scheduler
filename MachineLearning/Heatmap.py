@@ -15,7 +15,7 @@ except UnicodeDecodeError:
         exit(1)
 
 # Clean and convert numerical columns
-numeric_columns = ['day-price', 'total-grid', 'total-consumption']
+numeric_columns = ['day-price', 'total-consumption']
 for col in numeric_columns:
     data[col] = data[col].astype(str).str.replace(',', '').astype(float)
 
@@ -40,7 +40,6 @@ features = [
     'weather_code',
     'wind_speed_100m (km/h)',
     'total-consumption',
-    'total-grid',
     'year',
     'month',
     'day',
@@ -53,7 +52,6 @@ data_subset = data[features + [target]].rename(columns={
     'temperature_2m': 'Temperature (°C)',
     'day-price': 'Price (€/MWh)',
     'total-consumption': 'Consumption (MWh)',
-    'total-grid': 'Generation (MWh)',
     'weather_code': 'Weather Code',
     'wind_speed_100m (km/h)': 'Wind Speed (km/h)'
 })
