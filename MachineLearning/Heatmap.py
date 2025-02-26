@@ -1,65 +1,72 @@
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import numpy as np
 from sklearn.preprocessing import LabelEncoder
 
 # Load and preprocess data
 try:
-    data = pd.read_csv("data/merged-data.csv", encoding='utf-8-sig')  # Try UTF-8 with BOM
+    data = pd.read_csv("data/merged-data.csv", encoding='utf-8-sig')
 except UnicodeDecodeError:
     try:
-        data = pd.read_csv("data/merged-data.csv", encoding='latin-1')  # Fallback to Latin-1
+        data = pd.read_csv("data/merged-data.csv", encoding='latin-1')
     except Exception as e:
         print(f"Error loading CSV file: {e}")
         exit(1)
 
-# Clean and convert numerical columns
-numeric_columns = ['day-price', 'total-consumption']
-for col in numeric_columns:
-    data[col] = data[col].astype(str).str.replace(',', '').astype(float)
+# First, check actual column names
+print("Actual columns in DataFrame:", data.columns.tolist())
 
-# Convert datetime and extract features
-data['start date/time'] = pd.to_datetime(data['start date/time'], dayfirst=True)
-data['year'] = data['start date/time'].dt.year
-data['month'] = data['start date/time'].dt.month
-data['day'] = data['start date/time'].dt.day
-data['hour'] = data['start date/time'].dt.hour
+# Clean numerical columns (now using correct names)
+numeric_columns = ['day_price', 'grid_load']
+for col in numeric_columns:
+    if col in data.columns:
+        data[col] = data[col].astype(str).str.replace(',', '').astype(float)
+    else:
+        print(f"Warning: Column {col} not found in DataFrame")
+
+# Verify remaining columns exist before processing
+required_columns = [
+    'temperature_2m ',  # Notice the space at the end
+    'precipitation (mm)',
+    'rain (mm)',
+    'snowfall (cm)',
+    'weather_code (wmo code)',
+    'wind_speed_100m (km/h)',
+    'grid_load',
+    'Year',
+    'Month',
+    'Day',
+    'Hour',
+    'day of the week',
+    'day_price'
+]
+
+# Clean up column names first (remove trailing spaces)
+data.columns = data.columns.str.strip()
+
+# Check for missing columns
+missing = [col for col in required_columns if col not in data.columns]
+if missing:
+    print(f"Critical columns missing: {missing}")
+    exit(1)
 
 # Encode categorical features
 label_encoder = LabelEncoder()
 data['day of the week'] = label_encoder.fit_transform(data['day of the week'])
 
-# Define target and features using updated column names
-target = 'day-price'
-features = [
-    'temperature_2m',  # Updated column name
-    'precipitation (mm)',
-    'rain (mm)',
-    'snowfall (cm)',
-    'weather_code',
-    'wind_speed_100m (km/h)',
-    'total-consumption',
-    'year',
-    'month',
-    'day',
-    'hour',
-    'day of the week'
-]
-
-# Create analysis dataframe with friendly names
-data_subset = data[features + [target]].rename(columns={
+# Create analysis dataframe
+data_subset = data[required_columns].rename(columns={
     'temperature_2m': 'Temperature (°C)',
-    'day-price': 'Price (€/MWh)',
-    'total-consumption': 'Consumption (MWh)',
-    'weather_code': 'Weather Code',
+    'day_price': 'Price (€/MWh)',
+    'grid_load': 'Consumption (MWh)',
+    'weather_code (wmo code)': 'Weather Code',
     'wind_speed_100m (km/h)': 'Wind Speed (km/h)'
 })
 
 # Calculate correlation matrix
 corr_matrix = data_subset.corr(method='pearson')
 
-# Plot the full heatmap
+# Plot heatmap
 plt.figure(figsize=(18, 16))
 sns.heatmap(corr_matrix, 
             annot=True, 
@@ -68,11 +75,9 @@ sns.heatmap(corr_matrix,
             linewidths=0.5,
             cbar_kws={'label': 'Correlation Strength'})
 
-plt.title("Electricity Price Correlation Matrix (2023-2025)\n", fontsize=20, pad=25)
+plt.title("Electricity Price Correlation Matrix\n", fontsize=20, pad=25)
 plt.xticks(rotation=55, ha='right', fontsize=14)
 plt.yticks(fontsize=14)
 plt.tight_layout()
-
-# Save the visualization
 plt.savefig('price_correlation_heatmap_full.png', dpi=300, bbox_inches='tight')
 plt.show()
