@@ -5,15 +5,13 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Layer
-from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler, ReduceLROnPlateau
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.regularizers import L1L2
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import backend as K
 import matplotlib.pyplot as plt
-from prophet import Prophet
-from typing import Tuple
 
-# Custom Attention Layer
+# --- Custom Attention Layer ---
 class AttentionLayer(Layer):
     def __init__(self, units: int, **kwargs):
         super(AttentionLayer, self).__init__(**kwargs)
@@ -22,204 +20,213 @@ class AttentionLayer(Layer):
         self.V = Dense(1)
 
     def call(self, inputs: tf.Tensor) -> tf.Tensor:
-        hidden_states = inputs
-        score = self.V(K.tanh(self.W1(hidden_states) + self.W2(hidden_states)))
+        score = self.V(K.tanh(self.W1(inputs) + self.W2(inputs)))
         attention_weights = K.softmax(score, axis=1)
-        context_vector = attention_weights * hidden_states
-        context_vector = K.sum(context_vector, axis=1)
-        return context_vector
+        context_vector = attention_weights * inputs
+        return K.sum(context_vector, axis=1)
 
+# --- Utility functions ---
 def clean_column_name(col: str) -> str:
-    """Standardize column names"""
-    return (
-        col.strip()
-        .lower()
-        .replace(' ', '_')
-        .replace('-', '_')
-        .replace('/', '_')
-        .replace('(', '')
-        .replace(')', '')
-    )
+    return (col.strip().lower()
+               .replace(' ', '_')
+               .replace('-', '_')
+               .replace('/', '_')
+               .replace('(', '')
+               .replace(')', ''))
 
 def load_and_preprocess(path: str) -> pd.DataFrame:
-    """Load and validate data with flexible column matching"""
     try:
         df = pd.read_csv(path)
         print("Original columns detected:", df.columns.tolist())
-        
-        # Clean column names
         df.columns = [clean_column_name(col) for col in df.columns]
         print("Standardized columns:", df.columns.tolist())
         
-        # Column mapping with flexible patterns
+        # Expected column mapping
         expected_columns = {
-            'datetime': ['start_date', 'date_time', 'timestamp'],
-            'dow': ['day_of_week', 'weekday', 'dow'],
+            'datetime': ['start_date/time', 'start_date', 'date_time', 'timestamp'],
+            'dow': ['day_of_week', 'day_of_the_week', 'weekday', 'dow'],
             'price': ['day_price', 'price', 'energy_price'],
-            'temperature_2m': ['temp_2m', 'temperature'],
-            'total_consumption': ['total_cons', 'consumption', 'load'],
-            'wind_speed_100m': ['wind_speed', 'wind_100m', 'wind_kmh']
+            'temperature_2m': ['temperature_2m', 'temp_2m', 'temperature'],
+            'total_consumption': ['grid_load', 'total_cons', 'consumption', 'load'],
+            'wind_speed_100m': ['wind_speed_100m', 'wind_speed', 'wind_100m', 'wind_kmh']
         }
         
-        # Find best column matches
         final_columns = {}
         for target, patterns in expected_columns.items():
             matches = [col for col in df.columns if any(p in col for p in patterns)]
             if not matches:
-                raise ValueError(f"Missing column matching: {patterns}")
+                raise ValueError(f"Missing column matching patterns: {patterns}")
             final_columns[matches[0]] = target
         
-        # Rename and select columns
         df = df.rename(columns=final_columns)[list(expected_columns.keys())]
         
-        # Convert datetime
+        # Convert datetime column (assuming dayfirst format)
         df['datetime'] = pd.to_datetime(df['datetime'], dayfirst=True, errors='coerce')
         if df['datetime'].isnull().any():
-            raise ValueError("Invalid datetime values - check format should be DD/MM/YYYY HH:MM")
+            raise ValueError("Invalid datetime values – check format (DD/MM/YYYY HH:MM)")
         
-        # Convert day of week
-        dow_map = {"monday":0,"tuesday":1,"wednesday":2,"thursday":3,
-                 "friday":4,"saturday":5,"sunday":6}
+        # Convert day-of-week to numeric
+        dow_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+                   "friday": 4, "saturday": 5, "sunday": 6}
         df['dow'] = df['dow'].str.strip().str.lower().map(dow_map)
         if df['dow'].isnull().any():
-            invalid = df[df['dow'].isnull()]['dow'].unique()
-            raise ValueError(f"Invalid weekday values: {invalid}")
+            raise ValueError("Invalid day-of-week values found")
         
-        # Convert numeric columns
+        # Convert numeric columns; drop rows with invalid values (e.g., "#NUM!")
         numeric_cols = ['price', 'temperature_2m', 'total_consumption', 'wind_speed_100m']
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
-            if df[col].isnull().any():
-                raise ValueError(f"Invalid numeric values in {col}")
-
-        df = df.dropna().sort_values('datetime').reset_index(drop=True)
+        if df[numeric_cols].isnull().any().any():
+            print(f"Warning: Dropping rows due to invalid numeric values in {numeric_cols}")
+        df = df.dropna(subset=numeric_cols)
+        
+        df = df.sort_values('datetime').reset_index(drop=True)
         print("\nData validation successful!")
         print("Final columns:", df.columns.tolist())
-        print(f"Date range: {df.datetime.min()} to {df.datetime.max()}")
+        print(f"Date range: {df['datetime'].min()} to {df['datetime'].max()}")
         print(f"Total records: {len(df)}")
-        
         return df
 
     except Exception as e:
         print(f"\nDATA ERROR: {str(e)}")
-        print("Required column patterns:")
-        print("- datetime (date/time information)")
-        print("- dow (day of week)")
-        print("- price (energy price)")
-        print("- temperature_2m (2m temperature)")
-        print("- total_consumption (total power consumption)")
-        print("- wind_speed_100m (wind speed at 100m height)")
         raise
 
 def create_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Create time-based features"""
     df = df.copy()
-    
-    # Cyclical features
+    # Cyclical features for hour and day-of-week
     df['hour_sin'] = np.sin(2 * np.pi * df['datetime'].dt.hour / 24)
     df['hour_cos'] = np.cos(2 * np.pi * df['datetime'].dt.hour / 24)
     df['dow_sin'] = np.sin(2 * np.pi * df['dow'] / 7)
     df['dow_cos'] = np.cos(2 * np.pi * df['dow'] / 7)
-    
-    # Lag features
+    # Lag features for price
     for lag in [1, 6, 24, 48]:
         df[f'price_lag_{lag}'] = df['price'].shift(lag)
-    
-    # Rolling features
-    windows = {
-        'temperature_2m': [6, 24],
-        'total_consumption': [12, 24],
-        'wind_speed_100m': [6, 12]
-    }
-    for col, wds in windows.items():
-        for w in wds:
+    # Rolling mean features (using window sizes that make sense)
+    for col, windows in {'temperature_2m': [24], 'total_consumption': [24]}.items():
+        for w in windows:
             df[f'{col}_roll{w}_mean'] = df[col].rolling(w, min_periods=1).mean()
-    
-    # Interactions
+    # Interaction features
     df['temp_load'] = df['temperature_2m'] * df['total_consumption']
     df['wind_temp'] = df['wind_speed_100m'] / (df['temperature_2m'] + 1e-6)
     
-    # Drop initial nulls from lag features
     return df.dropna().reset_index(drop=True)
 
-def temporal_split(df: pd.DataFrame, test_start: str, buffer_days: int = 7):
-    """Time-aware data split"""
-    test_start = pd.to_datetime(test_start)
-    buffer_start = test_start - pd.Timedelta(days=buffer_days)
-    
-    train = df[df['datetime'] < buffer_start]
-    buffer = df[(df['datetime'] >= buffer_start) & (df['datetime'] < test_start)]
-    test = df[df['datetime'] >= test_start]
-    
-    return pd.concat([train, buffer]), test
-#w
+def create_sequences(X, y, window=24):
+    X_seq, y_seq = [], []
+    for i in range(len(X) - window):
+        X_seq.append(X[i:i+window])
+        y_seq.append(y[i+window])
+    return np.array(X_seq), np.array(y_seq)
+
 def build_temporal_model(input_shape):
-    """Build LSTM model with attention"""
     model = Sequential([
         LSTM(128, return_sequences=True, input_shape=input_shape,
-            kernel_regularizer=L1L2(1e-5, 1e-4)),
+             kernel_regularizer=L1L2(1e-5, 1e-4)),
         Dropout(0.3),
         AttentionLayer(64),
-        LSTM(64, return_sequences=False,
-            kernel_regularizer=L1L2(1e-5, 1e-4)),
+        LSTM(64, return_sequences=False, kernel_regularizer=L1L2(1e-5, 1e-4)),
         Dropout(0.2),
         Dense(32, activation='relu'),
         Dense(16, activation='relu'),
         Dense(1)
     ])
-    model.compile(
-        optimizer=Adam(learning_rate=0.001, clipnorm=1.0),
-        loss='mse',
-        metrics=['mae']
-    )
+    model.compile(optimizer=Adam(learning_rate=0.001, clipnorm=1.0),
+                  loss='mse', metrics=['mae'])
     return model
 
-def forecast_features(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    """Forecast features using Prophet"""
-    future_dates = pd.date_range(start, end, freq='H')
-    future_df = pd.DataFrame({'datetime': future_dates})
+# --- Future Forecasting using Recursive Prediction ---
+def forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_horizon=168, window=24):
+    """
+    Recursively predict the next forecast_horizon hours.
+    Assumes exogenous features (temperature, consumption, wind) remain constant at their last observed values.
+    """
+    last_date = df['datetime'].max()
+    last_row = df.iloc[-1]
+    const_temp = last_row['temperature_2m']
+    const_cons = last_row['total_consumption']
+    const_wind = last_row['wind_speed_100m']
+    # Rolling features (assumed constant if exogenous vars are constant)
+    temp_roll24 = last_row['temperature_2m_roll24_mean']
+    cons_roll24 = last_row['total_consumption_roll24_mean']
     
-    # Forecast each feature
-    for feature in ['temperature_2m', 'total_consumption', 'wind_speed_100m']:
-        model = Prophet()
-        model.fit(df[['datetime', feature]].rename(columns={'datetime': 'ds'}))
-        fcst = model.make_future_dataframe(periods=len(future_dates), freq='H', include_history=False)
-        future_df[feature] = model.predict(fcst)['yhat'].values
+    # Get the last window of raw features from training data
+    last_window_raw = df[FEATURES].iloc[-window:].values
+    current_seq = scaler_x.transform(last_window_raw)  # shape: (window, num_features)
     
-    return future_df
+    # Get price history (raw) from the last window to compute lag features
+    price_history = df[TARGET].iloc[-window:].tolist()
+    
+    forecast_timestamps = []
+    predictions = []
+    
+    for i in range(forecast_horizon):
+        X_input = current_seq.reshape(1, window, len(FEATURES))
+        pred_scaled = model.predict(X_input)
+        pred_price = scaler_y.inverse_transform(pred_scaled)[0, 0]
+        
+        future_time = last_date + pd.Timedelta(hours=i+1)
+        forecast_timestamps.append(future_time)
+        predictions.append(pred_price)
+        
+        # Update price history with the new prediction
+        price_history.append(pred_price)
+        
+        # Compute cyclical features for future_time
+        hour = future_time.hour
+        dow = future_time.dayofweek
+        hour_sin = np.sin(2 * np.pi * hour / 24)
+        hour_cos = np.cos(2 * np.pi * hour / 24)
+        dow_sin = np.sin(2 * np.pi * dow / 7)
+        dow_cos = np.cos(2 * np.pi * dow / 7)
+        
+        # Compute lag features based on updated price history
+        lag1 = price_history[-1]
+        lag6 = price_history[-6] if len(price_history) >= 6 else price_history[0]
+        lag24 = price_history[-24] if len(price_history) >= 24 else price_history[0]
+        
+        # Construct new feature vector in the same order as FEATURES:
+        # ['temperature_2m', 'total_consumption', 'wind_speed_100m',
+        #  'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
+        #  'price_lag_1', 'price_lag_6', 'price_lag_24',
+        #  'temperature_2m_roll24_mean', 'total_consumption_roll24_mean',
+        #  'temp_load', 'wind_temp']
+        new_features = np.array([
+            const_temp,
+            const_cons,
+            const_wind,
+            hour_sin,
+            hour_cos,
+            dow_sin,
+            dow_cos,
+            lag1,
+            lag6,
+            lag24,
+            temp_roll24,
+            cons_roll24,
+            const_temp * const_cons,      # temp_load
+            const_wind / (const_temp + 1e-6)  # wind_temp
+        ])
+        new_features_scaled = scaler_x.transform(new_features.reshape(1, -1))[0]
+        
+        # Update the current sequence: remove the oldest row and append the new one
+        current_seq = np.vstack([current_seq[1:], new_features_scaled])
+    
+    forecast_df = pd.DataFrame({
+        'datetime': forecast_timestamps,
+        'predicted_price': predictions
+    })
+    return forecast_df
 
-def prepare_future_data(historical_df: pd.DataFrame, future_df: pd.DataFrame) -> pd.DataFrame:
-    """Prepare future dataset with features"""
-    # Add temporal features
-    future_df['datetime'] = pd.to_datetime(future_df['datetime'])
-    future_df['hour'] = future_df['datetime'].dt.hour
-    future_df['dow'] = future_df['datetime'].dt.dayofweek
-    
-    # Add lag features
-    last_prices = historical_df['price'].values[-48:]
-    for lag in [1, 6, 24, 48]:
-        future_df[f'price_lag_{lag}'] = np.concatenate([
-            last_prices[-lag:], 
-            np.full(len(future_df)-lag, np.nan)
-        ])[:len(future_df)].ffill()
-    
-    # Add rolling features
-    for col in ['temperature_2m', 'total_consumption', 'wind_speed_100m']:
-        future_df[f'{col}_roll24_mean'] = future_df[col].rolling(24, min_periods=1).mean()
-    
-    # Add interactions
-    future_df['temp_load'] = future_df['temperature_2m'] * future_df['total_consumption']
-    future_df['wind_temp'] = future_df['wind_speed_100m'] / (future_df['temperature_2m'] + 1e-6)
-    
-    return future_df.dropna()
-
+# --- Main execution ---
 def main():
-    """Main execution flow"""
     try:
-        # Configuration
         DATA_PATH = "data/merged-data.csv"
-        PREDICTION_START = '2025-01-20'
-        PREDICTION_END = '2025-01-26'
+        # Load and preprocess historical data
+        df = load_and_preprocess(DATA_PATH)
+        df = create_temporal_features(df)
+        
+        # Use all available data for training (from two years ago up to 01-01-2025)
+        # Define features and target in the same order as expected in forecast_future()
         FEATURES = [
             'temperature_2m', 'total_consumption', 'wind_speed_100m',
             'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
@@ -229,38 +236,21 @@ def main():
         ]
         TARGET = 'price'
         
-        # Load and prepare data
-        df = load_and_preprocess(DATA_PATH)
-        df = create_temporal_features(df)
-        
-        # Temporal split
-        train_df, test_df = temporal_split(df, PREDICTION_START)
-        
-        # Scaling
+        # Scale features and target
         scaler_x = StandardScaler()
         scaler_y = MinMaxScaler()
+        X = scaler_x.fit_transform(df[FEATURES])
+        y = scaler_y.fit_transform(df[[TARGET]])
         
-        X_train = scaler_x.fit_transform(train_df[FEATURES])
-        y_train = scaler_y.fit_transform(train_df[[TARGET]])
-        X_test = scaler_x.transform(test_df[FEATURES])
-        y_test = scaler_y.transform(test_df[[TARGET]])
+        # Create sequences for training
+        window = 24
+        X_seq, y_seq = create_sequences(X, y, window)
+        print(f"Training on {X_seq.shape[0]} sequences of length {window}.")
         
-        # Create sequences
-        def create_sequences(X, y, window=24):
-            X_seq, y_seq = [], []
-            for i in range(len(X)-window):
-                X_seq.append(X[i:i+window])
-                y_seq.append(y[i+window])
-            return np.array(X_seq), np.array(y_seq)
-        
-        X_train_seq, y_train_seq = create_sequences(X_train, y_train)
-        X_test_seq, y_test_seq = create_sequences(X_test, y_test)
-        
-        # Build and train model
-        model = build_temporal_model((X_train_seq.shape[1], X_train_seq.shape[2]))
-        history = model.fit(
-            X_train_seq, y_train_seq,
-            validation_data=(X_test_seq, y_test_seq),
+        # Build and train LSTM model with attention
+        model = build_temporal_model((window, len(FEATURES)))
+        model.fit(
+            X_seq, y_seq,
             epochs=100,
             batch_size=64,
             callbacks=[
@@ -270,39 +260,23 @@ def main():
             verbose=1
         )
         
-        # Evaluate
-        test_pred = model.predict(X_test_seq)
-        test_pred = scaler_y.inverse_transform(test_pred)
-        test_true = scaler_y.inverse_transform(y_test_seq)
+        # Evaluate training performance on the training set
+        train_pred = model.predict(X_seq)
+        train_pred_inv = scaler_y.inverse_transform(train_pred)
+        train_true_inv = scaler_y.inverse_transform(y_seq)
+        print("\nTraining Metrics:")
+        print(f"MAE: {mean_absolute_error(train_true_inv, train_pred_inv):.2f}")
+        print(f"RMSE: {np.sqrt(mean_squared_error(train_true_inv, train_pred_inv)):.2f}")
+        print(f"R²: {r2_score(train_true_inv, train_pred_inv):.2f}")
         
-        print("\nValidation Metrics:")
-        print(f"MAE: {mean_absolute_error(test_true, test_pred):.2f}")
-        print(f"RMSE: {np.sqrt(mean_squared_error(test_true, test_pred)):.2f}")
-        print(f"R²: {r2_score(test_true, test_pred):.2f}")
+        # Forecast next week (168 hours) using recursive prediction
+        forecast_horizon = 168  # 7 days * 24 hours
+        forecast_df = forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_horizon, window)
         
-        # Future predictions
-        if pd.to_datetime(PREDICTION_START) > df['datetime'].max():
-            print("\nGenerating future predictions...")
-            # Forecast features
-            future_base = forecast_features(df, PREDICTION_START, PREDICTION_END)
-            future_df = prepare_future_data(df, future_base)
-            
-            # Prepare data
-            X_future = scaler_x.transform(future_df[FEATURES])
-            X_future_seq, _ = create_sequences(X_future, np.zeros(len(X_future)))
-            
-            # Predict
-            future_pred = model.predict(X_future_seq)
-            future_pred = scaler_y.inverse_transform(future_pred)
-            
-            # Save results
-            predictions = pd.DataFrame({
-                'datetime': future_df['datetime'].iloc[-len(future_pred):],
-                'predicted_price': future_pred.flatten()
-            })
-            predictions.to_csv('energy_price_predictions.csv', index=False)
-            print("Predictions saved successfully!")
-
+        # Save future predictions to CSV
+        forecast_df.to_csv('energy_price_predictions.csv', index=False)
+        print("Future predictions saved to 'energy_price_predictions.csv'.")
+    
     except Exception as e:
         print(f"\nFatal Error: {str(e)}")
         print("Troubleshooting Checklist:")
@@ -310,10 +284,12 @@ def main():
         print("2. Check column names match expected patterns")
         print("3. Validate datetime format (DD/MM/YYYY HH:MM)")
         print("4. Ensure numeric columns contain valid values")
-        print("5. Confirm sufficient data points (at least 2 weeks)")
-
+        print("5. Confirm sufficient data points (at least 2 years)")
+    
 if __name__ == "__main__":
     main()
+
+
 # # ----- Forecasting for the Coming Week using Prophet -----
 
 # def forecast_feature(data, feature, start_date, end_date):

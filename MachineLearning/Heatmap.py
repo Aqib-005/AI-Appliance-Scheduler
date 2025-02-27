@@ -13,20 +13,39 @@ except UnicodeDecodeError:
         print(f"Error loading CSV file: {e}")
         exit(1)
 
-# First, check actual column names
+# Print actual columns for debugging
 print("Actual columns in DataFrame:", data.columns.tolist())
 
-# Clean numerical columns (now using correct names)
-numeric_columns = ['day_price', 'grid_load']
+# Clean up column names (remove trailing spaces)
+data.columns = data.columns.str.strip()
+
+# List of columns that should be numeric
+numeric_columns = [
+    'temperature_2m',
+    'precipitation (mm)',
+    'rain (mm)',
+    'snowfall (cm)',
+    'weather_code (wmo code)',
+    'wind_speed_100m (km/h)',
+    'grid_load',
+    'day_price',
+    'Year',
+    'Month',
+    'Day',
+    'Hour'
+]
+
+# Convert columns to numeric, coercing errors (e.g., "#NUM!" becomes NaN)
 for col in numeric_columns:
     if col in data.columns:
-        data[col] = data[col].astype(str).str.replace(',', '').astype(float)
+        # Remove commas and convert to numeric
+        data[col] = pd.to_numeric(data[col].astype(str).str.replace(',', ''), errors='coerce')
     else:
         print(f"Warning: Column {col} not found in DataFrame")
 
-# Verify remaining columns exist before processing
+# Define required columns (make sure names match cleaned column names)
 required_columns = [
-    'temperature_2m ',  # Notice the space at the end
+    'temperature_2m',
     'precipitation (mm)',
     'rain (mm)',
     'snowfall (cm)',
@@ -41,20 +60,17 @@ required_columns = [
     'day_price'
 ]
 
-# Clean up column names first (remove trailing spaces)
-data.columns = data.columns.str.strip()
-
 # Check for missing columns
 missing = [col for col in required_columns if col not in data.columns]
 if missing:
     print(f"Critical columns missing: {missing}")
     exit(1)
 
-# Encode categorical features
+# Encode categorical feature 'day of the week'
 label_encoder = LabelEncoder()
 data['day of the week'] = label_encoder.fit_transform(data['day of the week'])
 
-# Create analysis dataframe
+# Create analysis dataframe and rename columns for clarity
 data_subset = data[required_columns].rename(columns={
     'temperature_2m': 'Temperature (°C)',
     'day_price': 'Price (€/MWh)',
