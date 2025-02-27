@@ -10,6 +10,7 @@ from tensorflow.keras.regularizers import L1L2
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import backend as K
 import matplotlib.pyplot as plt
+import keras_tuner as kt  # Make sure you have keras-tuner installed
 
 # --- Custom Attention Layer ---
 class AttentionLayer(Layer):
@@ -23,7 +24,6 @@ class AttentionLayer(Layer):
         score = self.V(K.tanh(self.W1(inputs) + self.W2(inputs)))
         attention_weights = K.softmax(score, axis=1)
         context_vector = attention_weights * inputs
-        # Sum across the time dimension to get a context vector
         return K.sum(context_vector, axis=1)
 
 # --- Utility functions ---
@@ -54,7 +54,6 @@ def load_and_preprocess(path: str) -> pd.DataFrame:
         
         final_columns = {}
         for target, patterns in expected_columns.items():
-            # Look for an exact match or if the pattern is a substring
             matches = [col for col in df.columns if any(p == col or p in col for p in patterns)]
             if not matches:
                 raise ValueError(f"Missing column matching patterns: {patterns}")
@@ -62,7 +61,7 @@ def load_and_preprocess(path: str) -> pd.DataFrame:
         
         df = df.rename(columns=final_columns)[list(expected_columns.keys())]
         
-        # Convert datetime column (assuming dayfirst format)
+        # Convert datetime column (assume dayfirst)
         df['datetime'] = pd.to_datetime(df['datetime'], dayfirst=True, errors='coerce')
         if df['datetime'].isnull().any():
             raise ValueError("Invalid datetime values – check format (DD/MM/YYYY HH:MM)")
@@ -74,7 +73,7 @@ def load_and_preprocess(path: str) -> pd.DataFrame:
         if df['dow'].isnull().any():
             raise ValueError("Invalid day-of-week values found")
         
-        # Convert numeric columns and drop rows with invalid values (e.g., "#NUM!")
+        # Convert numeric columns and drop rows with invalid values
         numeric_cols = ['price', 'temperature_2m', 'total_consumption', 'wind_speed_100m']
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
@@ -120,56 +119,48 @@ def create_sequences(X, y, window=24):
         y_seq.append(y[i+window])
     return np.array(X_seq), np.array(y_seq)
 
-def build_temporal_model(input_shape):
-    # Build LSTM model with attention; note the second LSTM has been removed
-    model = Sequential([
-        LSTM(128, return_sequences=True, input_shape=input_shape,
-             kernel_regularizer=L1L2(1e-5, 1e-4)),
-        Dropout(0.3),
-        AttentionLayer(64),
-        Dense(32, activation='relu'),
-        Dense(16, activation='relu'),
-        Dense(1)
-    ])
-    model.compile(optimizer=Adam(learning_rate=0.001, clipnorm=1.0),
-                  loss='mse', metrics=['mae'])
+# --- Hypermodel for Keras Tuner ---
+def build_model(hp, input_shape):
+    model = Sequential()
+    lstm_units = hp.Int('lstm_units', min_value=64, max_value=256, step=64)
+    model.add(LSTM(lstm_units, return_sequences=True, input_shape=input_shape,
+                   kernel_regularizer=L1L2(1e-5, 1e-4)))
+    dropout_rate = hp.Float('dropout_rate', min_value=0.2, max_value=0.5, step=0.1)
+    model.add(Dropout(dropout_rate))
+    att_units = hp.Int('att_units', min_value=32, max_value=128, step=32)
+    model.add(AttentionLayer(att_units))
+    dense_units = hp.Int('dense_units', min_value=16, max_value=64, step=16)
+    model.add(Dense(dense_units, activation='relu'))
+    model.add(Dense(1))
+    lr = hp.Float('learning_rate', min_value=1e-4, max_value=1e-2, sampling='LOG')
+    model.compile(optimizer=Adam(learning_rate=lr, clipnorm=1.0), loss='mse', metrics=['mae'])
     return model
 
-def forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_horizon=168, window=24):
-    """
-    Recursively forecast the next forecast_horizon hours.
-    Assumes exogenous features (temperature, consumption, wind) stay constant at their last observed values.
-    """
-    last_date = df['datetime'].max()
-    last_row = df.iloc[-1]
-    const_temp = last_row['temperature_2m']
-    const_cons = last_row['total_consumption']
-    const_wind = last_row['wind_speed_100m']
-    temp_roll24 = last_row['temperature_2m_roll24_mean']
-    cons_roll24 = last_row['total_consumption_roll24_mean']
+# --- Forecasting from a given initial sequence ---
+def forecast_from_seq(model, initial_seq, initial_datetime, forecast_horizon, initial_price_history, 
+                      FEATURES, TARGET, scaler_x, scaler_y):
+    current_seq = initial_seq.copy()  # shape: (window, num_features)
+    current_dt = initial_datetime
+    price_history = initial_price_history.copy()
     
-    # Get the last window of features (raw)
-    last_window_raw = df[FEATURES].iloc[-window:].values
-    current_seq = scaler_x.transform(last_window_raw)
-    
-    # Price history to compute lag features
-    price_history = df[TARGET].iloc[-window:].tolist()
     forecast_timestamps = []
     predictions = []
     
+    # We'll use the global raw constants for exogenous features (set in main)
+    global const_temp_raw, const_cons_raw, const_wind_raw, const_temp_roll24_raw, const_cons_roll24_raw
+    
     for i in range(forecast_horizon):
-        X_input = current_seq.reshape(1, window, len(FEATURES))
+        X_input = current_seq.reshape(1, current_seq.shape[0], current_seq.shape[1])
         pred_scaled = model.predict(X_input)
         pred_price = scaler_y.inverse_transform(pred_scaled)[0, 0]
         
-        future_time = last_date + pd.Timedelta(hours=i+1)
-        forecast_timestamps.append(future_time)
+        current_dt = current_dt + pd.Timedelta(hours=1)
+        forecast_timestamps.append(current_dt)
         predictions.append(pred_price)
         
-        # Update price history for lag features
         price_history.append(pred_price)
-        hour = future_time.hour
-        dow = future_time.dayofweek
+        hour = current_dt.hour
+        dow = current_dt.dayofweek
         hour_sin = np.sin(2 * np.pi * hour / 24)
         hour_cos = np.cos(2 * np.pi * hour / 24)
         dow_sin = np.sin(2 * np.pi * dow / 7)
@@ -178,16 +169,10 @@ def forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_ho
         lag6 = price_history[-6] if len(price_history) >= 6 else price_history[0]
         lag24 = price_history[-24] if len(price_history) >= 24 else price_history[0]
         
-        # Construct new feature vector matching FEATURES order:
-        # ['temperature_2m', 'total_consumption', 'wind_speed_100m',
-        #  'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
-        #  'price_lag_1', 'price_lag_6', 'price_lag_24',
-        #  'temperature_2m_roll24_mean', 'total_consumption_roll24_mean',
-        #  'temp_load', 'wind_temp']
         new_features = np.array([
-            const_temp,
-            const_cons,
-            const_wind,
+            const_temp_raw,
+            const_cons_raw,
+            const_wind_raw,
             hour_sin,
             hour_cos,
             dow_sin,
@@ -195,10 +180,10 @@ def forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_ho
             lag1,
             lag6,
             lag24,
-            temp_roll24,
-            cons_roll24,
-            const_temp * const_cons,
-            const_wind / (const_temp + 1e-6)
+            const_temp_roll24_raw,
+            const_cons_roll24_raw,
+            const_temp_raw * const_cons_raw,
+            const_wind_raw / (const_temp_raw + 1e-6)
         ])
         new_features_scaled = scaler_x.transform(new_features.reshape(1, -1))[0]
         current_seq = np.vstack([current_seq[1:], new_features_scaled])
@@ -209,13 +194,14 @@ def forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_ho
     })
     return forecast_df
 
+# --- Main execution ---
 def main():
     try:
         DATA_PATH = "data/merged-data.csv"
         df = load_and_preprocess(DATA_PATH)
         df = create_temporal_features(df)
         
-        # Define feature order (must match forecast_future())
+        # Define features in expected order
         FEATURES = [
             'temperature_2m', 'total_consumption', 'wind_speed_100m',
             'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
@@ -225,7 +211,7 @@ def main():
         ]
         TARGET = 'price'
         
-        # Scale features and target
+        # Scale features and target using all historical data
         scaler_x = StandardScaler()
         scaler_y = MinMaxScaler()
         X = scaler_x.fit_transform(df[FEATURES])
@@ -235,9 +221,23 @@ def main():
         X_seq, y_seq = create_sequences(X, y, window)
         print(f"Training on {X_seq.shape[0]} sequences of length {window}.")
         
-        # Build and train the model
-        model = build_temporal_model((window, len(FEATURES)))
-        model.fit(
+        # --- Hyperparameter Tuning with Keras Tuner ---
+        input_shape = (window, len(FEATURES))
+        tuner = kt.RandomSearch(
+            lambda hp: build_model(hp, input_shape),
+            objective='val_loss',
+            max_trials=5,
+            directory='tuner_dir',
+            project_name='electricity_price'
+        )
+        tuner.search(X_seq, y_seq, epochs=50, validation_split=0.2,
+                     callbacks=[EarlyStopping(patience=5, restore_best_weights=True)], verbose=1)
+        best_model = tuner.get_best_models(num_models=1)[0]
+        print("Best hyperparameters:")
+        print(tuner.get_best_hyperparameters(num_trials=1)[0].values)
+        
+        # --- Train best model further if desired ---
+        history = best_model.fit(
             X_seq, y_seq,
             epochs=100,
             batch_size=64,
@@ -249,7 +249,7 @@ def main():
         )
         
         # Evaluate on training set
-        train_pred = model.predict(X_seq)
+        train_pred = best_model.predict(X_seq)
         train_pred_inv = scaler_y.inverse_transform(train_pred)
         train_true_inv = scaler_y.inverse_transform(y_seq)
         print("\nTraining Metrics:")
@@ -257,11 +257,84 @@ def main():
         print(f"RMSE: {np.sqrt(mean_squared_error(train_true_inv, train_pred_inv)):.2f}")
         print(f"R²: {r2_score(train_true_inv, train_pred_inv):.2f}")
         
-        # Forecast next week (168 hours)
-        forecast_horizon = 168
-        forecast_df = forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_horizon, window)
-        forecast_df.to_csv('energy_price_predictions.csv', index=False)
-        print("Future predictions saved to 'energy_price_predictions.csv'.")
+        # ---------- Overall Future Forecast (from training end) ----------
+        last_train_dt = df['datetime'].max()  # e.g., 2025-01-01 23:00:00
+        initial_seq = scaler_x.transform(df[FEATURES].iloc[-window:].values)
+        initial_price_history = df[TARGET].iloc[-window:].tolist()
+        # Set global raw exogenous features from last row:
+        global const_temp_raw, const_cons_raw, const_wind_raw, const_temp_roll24_raw, const_cons_roll24_raw
+        last_row = df.iloc[-1]
+        const_temp_raw = last_row['temperature_2m']
+        const_cons_raw = last_row['total_consumption']
+        const_wind_raw = last_row['wind_speed_100m']
+        const_temp_roll24_raw = last_row['temperature_2m_roll24_mean']
+        const_cons_roll24_raw = last_row['total_consumption_roll24_mean']
+        
+        forecast_horizon = 168  # next week
+        overall_forecast = forecast_from_seq(best_model, initial_seq, last_train_dt, forecast_horizon, 
+                                             initial_price_history, FEATURES, TARGET, scaler_x, scaler_y)
+        # Plot overall forecast (optional)
+        plt.figure(figsize=(12,6))
+        plt.plot(overall_forecast['datetime'], overall_forecast['predicted_price'], label='Overall Forecast')
+        plt.xlabel('Datetime')
+        plt.ylabel('Electricity Price')
+        plt.title('Overall Future Electricity Price Forecast')
+        plt.legend()
+        plt.show()
+        
+        # ---------- Custom Forecast for Week 06-01-2025 to 13-01-2025 ----------
+        custom_start = pd.to_datetime("2025-01-06 00:00")
+        custom_horizon = 168  # 7 days
+        gap_hours = int((custom_start - last_train_dt).total_seconds() // 3600)
+        total_custom_horizon = gap_hours + custom_horizon
+        
+        custom_forecast_full = forecast_from_seq(best_model, initial_seq, last_train_dt, total_custom_horizon, 
+                                                 initial_price_history, FEATURES, TARGET, scaler_x, scaler_y)
+        custom_forecast = custom_forecast_full.iloc[gap_hours: gap_hours + custom_horizon].reset_index(drop=True)
+        
+        # Build DataFrame with actual custom prices (provided manually)
+        actual_prices = [
+            27.52, 19.26, 11.35, 9.20, 10.00, 14.81, 23.82, 31.72, 41.37, 36.36, 34.69, 32.83,
+            31.28, 28.60, 25.61, 26.32, 26.87, 31.66, 31.58, 28.74, 26.59, 13.82, 26.94, 12.99,
+            19.07, 8.71, 8.90, 5.01, 5.13, 5.80, 48.86, 76.83, 85.08, 84.24, 75.25, 62.80,
+            62.44, 63.90, 72.56, 78.11, 79.98, 96.03, 101.11, 86.21, 78.01, 72.45, 72.45, 50.04,
+            71.05, 68.01, 63.34, 57.01, 66.29, 72.07, 82.70, 100.73, 128.22, 108.18, 94.65, 100.01,
+            89.99, 97.20, 110.19, 127.80, 135.82, 155.46, 149.23, 146.48, 136.86, 127.86, 115.92, 103.59,
+            101.44, 100.00, 98.77, 95.22, 98.28, 102.65, 133.54, 148.80, 164.88, 156.15, 147.64, 140.21,
+            128.18, 121.15, 123.95, 127.53, 123.75, 130.91, 134.75, 125.44, 119.23, 104.99, 101.10, 88.19,
+            84.79, 80.23, 71.29, 69.05, 69.89, 83.90, 99.09, 123.92, 139.47, 136.92, 123.57, 113.59,
+            107.43, 105.01, 110.01, 128.69, 134.87, 142.56, 144.12, 141.05, 134.82, 122.51, 119.77, 111.71,
+            106.64, 98.99, 95.71, 89.45, 88.35, 88.40, 88.13, 94.68, 107.65, 103.14, 101.13, 99.56,
+            96.74, 93.15, 94.90, 104.89, 112.12, 119.80, 122.34, 114.85, 111.19, 104.80, 103.07, 105.69,
+            83.58, 83.79, 86.75, 84.20, 85.00, 83.75, 85.90, 101.75, 114.67, 120.07, 117.77, 105.61,
+            102.99, 99.61, 104.74, 118.70, 132.92, 141.00, 146.66, 143.66, 134.86, 127.49, 121.20, 114.90
+        ]
+        custom_dates = pd.date_range(start=custom_start, periods=custom_horizon, freq='H')
+        actual_df = pd.DataFrame({
+            'datetime': custom_dates,
+            'actual_price': actual_prices
+        })
+        
+        mae_custom = mean_absolute_error(actual_df['actual_price'], custom_forecast['predicted_price'])
+        rmse_custom = np.sqrt(mean_squared_error(actual_df['actual_price'], custom_forecast['predicted_price']))
+        r2_custom = r2_score(actual_df['actual_price'], custom_forecast['predicted_price'])
+        
+        print("\nCustom Forecast Evaluation Metrics (06-01-2025 to 13-01-2025):")
+        print(f"MAE: {mae_custom:.2f}")
+        print(f"RMSE: {rmse_custom:.2f}")
+        print(f"R²: {r2_custom:.2f}")
+        
+        # Plot the comparison graph
+        plt.figure(figsize=(14,7))
+        plt.plot(custom_forecast['datetime'], custom_forecast['predicted_price'], label='Predicted Price', marker='o')
+        plt.plot(actual_df['datetime'], actual_df['actual_price'], label='Actual Price', marker='x')
+        plt.xlabel('Datetime')
+        plt.ylabel('Electricity Price')
+        plt.title('Predicted vs Actual Electricity Price (06-01-2025 to 13-01-2025)')
+        plt.legend()
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.show()
     
     except Exception as e:
         print(f"\nFatal Error: {str(e)}")
@@ -274,212 +347,3 @@ def main():
     
 if __name__ == "__main__":
     main()
-
-# # ----- Forecasting for the Coming Week using Prophet -----
-
-# def forecast_feature(data, feature, start_date, end_date):
-#     """Forecast a feature between specific dates using Prophet"""
-#     feature_data = data[['StartDateTime', feature]].rename(columns={'StartDateTime': 'ds', feature: 'y'})
-#     model_prophet = Prophet()
-#     model_prophet.fit(feature_data)
-    
-#     future = pd.date_range(start=start_date, end=end_date, freq='h')  # Changed to 'h'
-#     forecast = model_prophet.predict(pd.DataFrame({'ds': future}))
-#     return forecast[['ds', 'yhat']]
-
-# # Define custom date range
-# start_date = '2025-01-20 00:00:00'
-# end_date = '2025-01-26 23:00:00'
-# future_dates = pd.date_range(start=start_date, end=end_date, freq='h')
-
-# # Create future DataFrame
-# future_data = pd.DataFrame(index=future_dates)
-# future_data['Year'] = future_data.index.year
-# future_data['Month'] = future_data.index.month
-# future_data['Day'] = future_data.index.day
-# future_data['Hour'] = future_data.index.hour
-# future_data['DayOfWeek'] = future_data.index.dayofweek
-
-# # Forecast features for custom dates
-# temp_forecast = forecast_feature(data, 'temperature_2m', start_date, end_date)
-# wind_forecast = forecast_feature(data, 'wind_speed_100m (km/h)', start_date, end_date)
-# load_forecast = forecast_feature(data, 'total-consumption', start_date, end_date)
-
-# # Merge forecasts
-# future_data = future_data.merge(temp_forecast, left_index=True, right_on='ds')
-# future_data = future_data.merge(wind_forecast, on='ds', suffixes=('', '_wind'))
-# future_data = future_data.merge(load_forecast, on='ds', suffixes=('', '_load'))
-# future_data.rename(columns={
-#     'yhat': 'temperature_2m',
-#     'yhat_wind': 'wind_speed_100m (km/h)',
-#     'yhat_load': 'total-consumption'
-# }, inplace=True)
-# future_data.set_index('ds', inplace=True)
-# future_data = prepare_future_data(future_data, data)
-
-# # Add rolling averages
-# future_data['Rolling_Temp_24h'] = future_data['temperature_2m'].rolling(24).mean()
-# future_data['Rolling_Wind_24h'] = future_data['wind_speed_100m (km/h)'].rolling(24).mean()
-# future_data['Rolling_Load_24h'] = future_data['total-consumption'].rolling(24).mean()
-# future_data['Lag_Price'] = data['Price'].iloc[-1]
-# future_data.bfill(inplace=True)
-
-# # Scale features
-# future_data_scaled = scaler_X.transform(future_data[features])
-
-# # Prepare sequences
-# time_steps = 24 
-# future_seq = []
-# for i in range(len(future_data_scaled) - time_steps + 1):
-#     future_seq.append(future_data_scaled[i:i+time_steps])
-# future_seq = np.array(future_seq)
-
-# # Predict prices
-# future_predictions_scaled = model.predict(future_seq)
-# future_predictions = scaler_y.inverse_transform(future_predictions_scaled)
-
-# # Save predictions
-# future_predictions_df = pd.DataFrame({
-#     'StartDateTime': future_dates[time_steps-1:],
-#     'Predicted Price [Euro/MWh]': future_predictions.flatten()
-# })
-# # future_predictions_df.to_csv('custom_predictions.csv', index=False)
-
-# # ----- Comparison with Actual Data -----
-# actual_data = pd.DataFrame({
-#     'StartDateTime': [
-#         # Jan 20, 2025
-#         '2025-01-20 00:00:00', '2025-01-20 01:00:00', '2025-01-20 02:00:00', 
-#         '2025-01-20 03:00:00', '2025-01-20 04:00:00', '2025-01-20 05:00:00', 
-#         '2025-01-20 06:00:00', '2025-01-20 07:00:00', '2025-01-20 08:00:00', 
-#         '2025-01-20 09:00:00', '2025-01-20 10:00:00', '2025-01-20 11:00:00', 
-#         '2025-01-20 12:00:00', '2025-01-20 13:00:00', '2025-01-20 14:00:00', 
-#         '2025-01-20 15:00:00', '2025-01-20 16:00:00', '2025-01-20 17:00:00', 
-#         '2025-01-20 18:00:00', '2025-01-20 19:00:00', '2025-01-20 20:00:00', 
-#         '2025-01-20 21:00:00', '2025-01-20 22:00:00', '2025-01-20 23:00:00',
-#         # Jan 21, 2025
-#         '2025-01-21 00:00:00', '2025-01-21 01:00:00', '2025-01-21 02:00:00', 
-#         '2025-01-21 03:00:00', '2025-01-21 04:00:00', '2025-01-21 05:00:00', 
-#         '2025-01-21 06:00:00', '2025-01-21 07:00:00', '2025-01-21 08:00:00', 
-#         '2025-01-21 09:00:00', '2025-01-21 10:00:00', '2025-01-21 11:00:00', 
-#         '2025-01-21 12:00:00', '2025-01-21 13:00:00', '2025-01-21 14:00:00', 
-#         '2025-01-21 15:00:00', '2025-01-21 16:00:00', '2025-01-21 17:00:00', 
-#         '2025-01-21 18:00:00', '2025-01-21 19:00:00', '2025-01-21 20:00:00', 
-#         '2025-01-21 21:00:00', '2025-01-21 22:00:00', '2025-01-21 23:00:00',
-#         # Jan 22, 2025
-#         '2025-01-22 00:00:00', '2025-01-22 01:00:00', '2025-01-22 02:00:00', 
-#         '2025-01-22 03:00:00', '2025-01-22 04:00:00', '2025-01-22 05:00:00', 
-#         '2025-01-22 06:00:00', '2025-01-22 07:00:00', '2025-01-22 08:00:00', 
-#         '2025-01-22 09:00:00', '2025-01-22 10:00:00', '2025-01-22 11:00:00', 
-#         '2025-01-22 12:00:00', '2025-01-22 13:00:00', '2025-01-22 14:00:00', 
-#         '2025-01-22 15:00:00', '2025-01-22 16:00:00', '2025-01-22 17:00:00', 
-#         '2025-01-22 18:00:00', '2025-01-22 19:00:00', '2025-01-22 20:00:00', 
-#         '2025-01-22 21:00:00', '2025-01-22 22:00:00', '2025-01-22 23:00:00',
-#         # Jan 23, 2025
-#         '2025-01-23 00:00:00', '2025-01-23 01:00:00', '2025-01-23 02:00:00', 
-#         '2025-01-23 03:00:00', '2025-01-23 04:00:00', '2025-01-23 05:00:00', 
-#         '2025-01-23 06:00:00', '2025-01-23 07:00:00', '2025-01-23 08:00:00', 
-#         '2025-01-23 09:00:00', '2025-01-23 10:00:00', '2025-01-23 11:00:00', 
-#         '2025-01-23 12:00:00', '2025-01-23 13:00:00', '2025-01-23 14:00:00', 
-#         '2025-01-23 15:00:00', '2025-01-23 16:00:00', '2025-01-23 17:00:00', 
-#         '2025-01-23 18:00:00', '2025-01-23 19:00:00', '2025-01-23 20:00:00', 
-#         '2025-01-23 21:00:00', '2025-01-23 22:00:00', '2025-01-23 23:00:00',
-#         # Jan 24, 2025
-#         '2025-01-24 00:00:00', '2025-01-24 01:00:00', '2025-01-24 02:00:00', 
-#         '2025-01-24 03:00:00', '2025-01-24 04:00:00', '2025-01-24 05:00:00', 
-#         '2025-01-24 06:00:00', '2025-01-24 07:00:00', '2025-01-24 08:00:00', 
-#         '2025-01-24 09:00:00', '2025-01-24 10:00:00', '2025-01-24 11:00:00', 
-#         '2025-01-24 12:00:00', '2025-01-24 13:00:00', '2025-01-24 14:00:00', 
-#         '2025-01-24 15:00:00', '2025-01-24 16:00:00', '2025-01-24 17:00:00', 
-#         '2025-01-24 18:00:00', '2025-01-24 19:00:00', '2025-01-24 20:00:00', 
-#         '2025-01-24 21:00:00', '2025-01-24 22:00:00', '2025-01-24 23:00:00',
-#         # Jan 25, 2025
-#         '2025-01-25 00:00:00', '2025-01-25 01:00:00', '2025-01-25 02:00:00', 
-#         '2025-01-25 03:00:00', '2025-01-25 04:00:00', '2025-01-25 05:00:00', 
-#         '2025-01-25 06:00:00', '2025-01-25 07:00:00', '2025-01-25 08:00:00', 
-#         '2025-01-25 09:00:00', '2025-01-25 10:00:00', '2025-01-25 11:00:00', 
-#         '2025-01-25 12:00:00', '2025-01-25 13:00:00', '2025-01-25 14:00:00', 
-#         '2025-01-25 15:00:00', '2025-01-25 16:00:00', '2025-01-25 17:00:00', 
-#         '2025-01-25 18:00:00', '2025-01-25 19:00:00', '2025-01-25 20:00:00', 
-#         '2025-01-25 21:00:00', '2025-01-25 22:00:00', '2025-01-25 23:00:00',
-#         # Jan 26, 2025
-#         '2025-01-26 00:00:00', '2025-01-26 01:00:00', '2025-01-26 02:00:00', 
-#         '2025-01-26 03:00:00', '2025-01-26 04:00:00', '2025-01-26 05:00:00', 
-#         '2025-01-26 06:00:00', '2025-01-26 07:00:00', '2025-01-26 08:00:00', 
-#         '2025-01-26 09:00:00', '2025-01-26 10:00:00', '2025-01-26 11:00:00', 
-#         '2025-01-26 12:00:00', '2025-01-26 13:00:00', '2025-01-26 14:00:00', 
-#         '2025-01-26 15:00:00', '2025-01-26 16:00:00', '2025-01-26 17:00:00', 
-#         '2025-01-26 18:00:00', '2025-01-26 19:00:00', '2025-01-26 20:00:00', 
-#         '2025-01-26 21:00:00', '2025-01-26 22:00:00', '2025-01-26 23:00:00'
-#     ],
-#     'Actual Price [Euro/MWh]': [ 
-#         # Jan 20, 2025
-#         122.27, 119.44, 116.56, 114.41, 115.45, 127.54, 161.71, 276.48, 431.99, 
-#         291.70, 236.29, 187.48, 176.00, 171.39, 191.85, 277.17, 203.12, 180.40, 
-#         173.28, 135.57, 220.00, 170.00, 152.51, 137.98,
-#         # Jan 21, 2025
-#         127.52, 121.65, 116.67, 113.86, 113.54, 122.34, 142.20, 190.06, 248.32, 
-#         211.68, 198.05, 161.50, 147.44, 142.83, 150.05, 173.43, 212.13, 301.15, 
-#         251.93, 202.68, 174.84, 155.19, 138.60, 125.29,
-#         # Jan 22, 2025
-#         128.00, 125.06, 122.22, 121.66, 123.16, 128.32, 156.92, 208.25, 238.60, 
-#         199.41, 179.06, 172.94, 165.00, 170.00, 179.92, 195.67, 199.04, 208.99, 
-#         180.43, 167.08, 134.49, 127.78, 128.09, 114.68,
-#         # Jan 23, 2025
-#         113.70, 108.88, 105.58, 100.01, 97.59, 100.01, 106.41, 136.60, 159.03, 
-#         155.42, 130.94, 116.10, 94.93, 88.56, 85.86, 89.80, 89.87, 106.75, 112.00, 
-#         101.87, 86.36, 74.28, 75.68, 58.23,
-#         # Jan 24, 2025
-#         69.03, 58.16, 45.05, 40.60, 50.17, 73.20, 85.44, 109.16, 116.23, 96.34, 
-#         88.90, 78.44, 76.48, 74.69, 74.51, 74.51, 75.25, 83.02, 88.59, 91.78, 
-#         84.99, 80.79, 91.97, 86.29,
-#         # Jan 25, 2025
-#         59.04, 64.96, 63.55, 67.17, 76.77, 76.89, 79.32, 76.89, 88.99, 87.31, 
-#         86.32, 88.15, 82.55, 81.98, 89.00, 111.07, 132.97, 145.85, 151.00, 147.53, 
-#         137.60, 134.61, 132.26, 122.03,
-#         # Jan 26, 2025
-#         126.21, 115.79, 111.30, 106.85, 105.43, 107.86, 110.60, 117.62, 124.17, 
-#         121.97, 105.51, 102.57, 96.73, 90.02, 92.52, 111.63, 125.92, 132.77, 118.94, 
-#         90.32, 78.93, 68.26, 49.25, 23.89
-#     ]
-# })
-
-# actual_data['StartDateTime'] = pd.to_datetime(actual_data['StartDateTime'])
-
-# comparison_df = pd.merge(future_predictions_df, actual_data, on='StartDateTime', how='inner')
-
-# if comparison_df.empty:
-#     print("No matching actual data available for the forecast period. Skipping future evaluation metrics.")
-# else:
-#     mse_future = mean_squared_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
-#     mae_future = mean_absolute_error(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
-#     r2_future = r2_score(comparison_df['Actual Price [Euro/MWh]'], comparison_df['Predicted Price [Euro/MWh]'])
-#     rmse_future = np.sqrt(mse_future)
-
-#     print("Future Evaluation Metrics:")
-#     print(f"Mean Squared Error: {mse_future:.4f}")
-#     print(f"Mean Absolute Error: {mae_future:.4f}")
-#     print(f"R-squared: {r2_future:.4f}")
-#     print(f"Root Mean Squared Error: {rmse_future:.4f}")
-
-#     # Plot predicted vs actual prices
-#     plt.figure(figsize=(12, 6))
-#     plt.plot(comparison_df['StartDateTime'], comparison_df['Predicted Price [Euro/MWh]'], label='Predicted', marker='o')
-#     plt.plot(comparison_df['StartDateTime'], comparison_df['Actual Price [Euro/MWh]'], label='Actual', marker='x')
-#     plt.title('Predicted vs Actual Hourly Prices')
-#     plt.xlabel('StartDateTime')
-#     plt.ylabel('Price [Euro/MWh]')
-#     plt.legend()
-#     plt.grid(True)
-#     plt.show()
-
-#     # Plot residuals
-#     comparison_df['Residuals'] = comparison_df['Actual Price [Euro/MWh]'] - comparison_df['Predicted Price [Euro/MWh]']
-#     plt.figure(figsize=(12, 6))
-#     plt.plot(comparison_df['StartDateTime'], comparison_df['Residuals'], marker='o', color='red')
-#     plt.axhline(0, color='black', linestyle='--')
-#     plt.title('Residuals (Actual - Predicted)')
-#     plt.xlabel('StartDateTime')
-#     plt.ylabel('Residuals [Euro/MWh]')
-#     plt.grid(True)
-#     plt.show()
