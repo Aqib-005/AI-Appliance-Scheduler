@@ -23,16 +23,17 @@ class AttentionLayer(Layer):
         score = self.V(K.tanh(self.W1(inputs) + self.W2(inputs)))
         attention_weights = K.softmax(score, axis=1)
         context_vector = attention_weights * inputs
+        # Sum across the time dimension to get a context vector
         return K.sum(context_vector, axis=1)
 
 # --- Utility functions ---
 def clean_column_name(col: str) -> str:
     return (col.strip().lower()
-               .replace(' ', '_')
-               .replace('-', '_')
-               .replace('/', '_')
-               .replace('(', '')
-               .replace(')', ''))
+            .replace(' ', '_')
+            .replace('-', '_')
+            .replace('/', '_')
+            .replace('(', '')
+            .replace(')', ''))
 
 def load_and_preprocess(path: str) -> pd.DataFrame:
     try:
@@ -41,19 +42,20 @@ def load_and_preprocess(path: str) -> pd.DataFrame:
         df.columns = [clean_column_name(col) for col in df.columns]
         print("Standardized columns:", df.columns.tolist())
         
-        # Expected column mapping
+        # Expected column mapping using cleaned names
         expected_columns = {
-            'datetime': ['start_date/time', 'start_date', 'date_time', 'timestamp'],
+            'datetime': ['start_date_time', 'start_date', 'date_time', 'timestamp'],
             'dow': ['day_of_week', 'day_of_the_week', 'weekday', 'dow'],
             'price': ['day_price', 'price', 'energy_price'],
             'temperature_2m': ['temperature_2m', 'temp_2m', 'temperature'],
             'total_consumption': ['grid_load', 'total_cons', 'consumption', 'load'],
-            'wind_speed_100m': ['wind_speed_100m', 'wind_speed', 'wind_100m', 'wind_kmh']
+            'wind_speed_100m': ['wind_speed_100m', 'wind_speed_100m_km_h', 'wind_speed', 'wind_100m', 'wind_kmh']
         }
         
         final_columns = {}
         for target, patterns in expected_columns.items():
-            matches = [col for col in df.columns if any(p in col for p in patterns)]
+            # Look for an exact match or if the pattern is a substring
+            matches = [col for col in df.columns if any(p == col or p in col for p in patterns)]
             if not matches:
                 raise ValueError(f"Missing column matching patterns: {patterns}")
             final_columns[matches[0]] = target
@@ -72,7 +74,7 @@ def load_and_preprocess(path: str) -> pd.DataFrame:
         if df['dow'].isnull().any():
             raise ValueError("Invalid day-of-week values found")
         
-        # Convert numeric columns; drop rows with invalid values (e.g., "#NUM!")
+        # Convert numeric columns and drop rows with invalid values (e.g., "#NUM!")
         numeric_cols = ['price', 'temperature_2m', 'total_consumption', 'wind_speed_100m']
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
@@ -101,7 +103,7 @@ def create_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
     # Lag features for price
     for lag in [1, 6, 24, 48]:
         df[f'price_lag_{lag}'] = df['price'].shift(lag)
-    # Rolling mean features (using window sizes that make sense)
+    # Rolling mean features (24-hour window) for temperature and consumption
     for col, windows in {'temperature_2m': [24], 'total_consumption': [24]}.items():
         for w in windows:
             df[f'{col}_roll{w}_mean'] = df[col].rolling(w, min_periods=1).mean()
@@ -119,13 +121,12 @@ def create_sequences(X, y, window=24):
     return np.array(X_seq), np.array(y_seq)
 
 def build_temporal_model(input_shape):
+    # Build LSTM model with attention; note the second LSTM has been removed
     model = Sequential([
         LSTM(128, return_sequences=True, input_shape=input_shape,
              kernel_regularizer=L1L2(1e-5, 1e-4)),
         Dropout(0.3),
         AttentionLayer(64),
-        LSTM(64, return_sequences=False, kernel_regularizer=L1L2(1e-5, 1e-4)),
-        Dropout(0.2),
         Dense(32, activation='relu'),
         Dense(16, activation='relu'),
         Dense(1)
@@ -134,28 +135,25 @@ def build_temporal_model(input_shape):
                   loss='mse', metrics=['mae'])
     return model
 
-# --- Future Forecasting using Recursive Prediction ---
 def forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_horizon=168, window=24):
     """
-    Recursively predict the next forecast_horizon hours.
-    Assumes exogenous features (temperature, consumption, wind) remain constant at their last observed values.
+    Recursively forecast the next forecast_horizon hours.
+    Assumes exogenous features (temperature, consumption, wind) stay constant at their last observed values.
     """
     last_date = df['datetime'].max()
     last_row = df.iloc[-1]
     const_temp = last_row['temperature_2m']
     const_cons = last_row['total_consumption']
     const_wind = last_row['wind_speed_100m']
-    # Rolling features (assumed constant if exogenous vars are constant)
     temp_roll24 = last_row['temperature_2m_roll24_mean']
     cons_roll24 = last_row['total_consumption_roll24_mean']
     
-    # Get the last window of raw features from training data
+    # Get the last window of features (raw)
     last_window_raw = df[FEATURES].iloc[-window:].values
-    current_seq = scaler_x.transform(last_window_raw)  # shape: (window, num_features)
+    current_seq = scaler_x.transform(last_window_raw)
     
-    # Get price history (raw) from the last window to compute lag features
+    # Price history to compute lag features
     price_history = df[TARGET].iloc[-window:].tolist()
-    
     forecast_timestamps = []
     predictions = []
     
@@ -168,23 +166,19 @@ def forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_ho
         forecast_timestamps.append(future_time)
         predictions.append(pred_price)
         
-        # Update price history with the new prediction
+        # Update price history for lag features
         price_history.append(pred_price)
-        
-        # Compute cyclical features for future_time
         hour = future_time.hour
         dow = future_time.dayofweek
         hour_sin = np.sin(2 * np.pi * hour / 24)
         hour_cos = np.cos(2 * np.pi * hour / 24)
         dow_sin = np.sin(2 * np.pi * dow / 7)
         dow_cos = np.cos(2 * np.pi * dow / 7)
-        
-        # Compute lag features based on updated price history
         lag1 = price_history[-1]
         lag6 = price_history[-6] if len(price_history) >= 6 else price_history[0]
         lag24 = price_history[-24] if len(price_history) >= 24 else price_history[0]
         
-        # Construct new feature vector in the same order as FEATURES:
+        # Construct new feature vector matching FEATURES order:
         # ['temperature_2m', 'total_consumption', 'wind_speed_100m',
         #  'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
         #  'price_lag_1', 'price_lag_6', 'price_lag_24',
@@ -203,12 +197,10 @@ def forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_ho
             lag24,
             temp_roll24,
             cons_roll24,
-            const_temp * const_cons,      # temp_load
-            const_wind / (const_temp + 1e-6)  # wind_temp
+            const_temp * const_cons,
+            const_wind / (const_temp + 1e-6)
         ])
         new_features_scaled = scaler_x.transform(new_features.reshape(1, -1))[0]
-        
-        # Update the current sequence: remove the oldest row and append the new one
         current_seq = np.vstack([current_seq[1:], new_features_scaled])
     
     forecast_df = pd.DataFrame({
@@ -217,16 +209,13 @@ def forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_ho
     })
     return forecast_df
 
-# --- Main execution ---
 def main():
     try:
         DATA_PATH = "data/merged-data.csv"
-        # Load and preprocess historical data
         df = load_and_preprocess(DATA_PATH)
         df = create_temporal_features(df)
         
-        # Use all available data for training (from two years ago up to 01-01-2025)
-        # Define features and target in the same order as expected in forecast_future()
+        # Define feature order (must match forecast_future())
         FEATURES = [
             'temperature_2m', 'total_consumption', 'wind_speed_100m',
             'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
@@ -242,12 +231,11 @@ def main():
         X = scaler_x.fit_transform(df[FEATURES])
         y = scaler_y.fit_transform(df[[TARGET]])
         
-        # Create sequences for training
         window = 24
         X_seq, y_seq = create_sequences(X, y, window)
         print(f"Training on {X_seq.shape[0]} sequences of length {window}.")
         
-        # Build and train LSTM model with attention
+        # Build and train the model
         model = build_temporal_model((window, len(FEATURES)))
         model.fit(
             X_seq, y_seq,
@@ -260,7 +248,7 @@ def main():
             verbose=1
         )
         
-        # Evaluate training performance on the training set
+        # Evaluate on training set
         train_pred = model.predict(X_seq)
         train_pred_inv = scaler_y.inverse_transform(train_pred)
         train_true_inv = scaler_y.inverse_transform(y_seq)
@@ -269,11 +257,9 @@ def main():
         print(f"RMSE: {np.sqrt(mean_squared_error(train_true_inv, train_pred_inv)):.2f}")
         print(f"R²: {r2_score(train_true_inv, train_pred_inv):.2f}")
         
-        # Forecast next week (168 hours) using recursive prediction
-        forecast_horizon = 168  # 7 days * 24 hours
+        # Forecast next week (168 hours)
+        forecast_horizon = 168
         forecast_df = forecast_future(model, df, FEATURES, TARGET, scaler_x, scaler_y, forecast_horizon, window)
-        
-        # Save future predictions to CSV
         forecast_df.to_csv('energy_price_predictions.csv', index=False)
         print("Future predictions saved to 'energy_price_predictions.csv'.")
     
@@ -288,7 +274,6 @@ def main():
     
 if __name__ == "__main__":
     main()
-
 
 # # ----- Forecasting for the Coming Week using Prophet -----
 
