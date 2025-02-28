@@ -71,8 +71,8 @@ def load_and_preprocess(path: str) -> pd.DataFrame:
         if df['dow'].isnull().any():
             raise ValueError("Invalid day-of-week values found")
         
-        # Convert numeric columns and drop rows with invalid values
-        numeric_cols = ['price', 'temperature_2m', 'total_consumption', 'wind_speed_100m']
+        # Convert numeric columns for exogenous features only (price may be blank for future rows)
+        numeric_cols = ['temperature_2m', 'total_consumption', 'wind_speed_100m']
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
         if df[numeric_cols].isnull().any().any():
@@ -97,7 +97,7 @@ def create_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
     df['hour_cos'] = np.cos(2 * np.pi * df['datetime'].dt.hour / 24)
     df['dow_sin'] = np.sin(2 * np.pi * df['dow'] / 7)
     df['dow_cos'] = np.cos(2 * np.pi * df['dow'] / 7)
-    # Lag features for price
+    # Lag features for price (if present, may be NaN for future rows)
     for lag in [1, 6, 24, 48]:
         df[f'price_lag_{lag}'] = df['price'].shift(lag)
     # Rolling mean (24-hour) for temperature and consumption
@@ -118,11 +118,6 @@ def create_sequences(X, y, window=24):
     return np.array(X_seq), np.array(y_seq)
 
 def create_sequences_with_timestamps(data_array, timestamps, window=24):
-    """
-    Creates sequences from data_array (already scaled) and returns:
-      - X_seq: np.array of shape (num_sequences, window, num_features)
-      - end_timestamps: list of timestamps corresponding to the end of each sequence.
-    """
     X_seq = []
     end_timestamps = []
     for i in range(len(data_array) - window):
@@ -168,10 +163,13 @@ def main():
         scaler_x = StandardScaler()
         scaler_y = MinMaxScaler()
         X = scaler_x.fit_transform(df[FEATURES])
-        y = scaler_y.fit_transform(df[[TARGET]])
+        # For training, use rows where price is not NaN (since future rows may have blank price)
+        train_df = df[df[TARGET].notna()]
+        X_train = scaler_x.transform(train_df[FEATURES])
+        y_train = scaler_y.fit_transform(train_df[[TARGET]])
         
         window = 24
-        X_seq, y_seq = create_sequences(X, y, window)
+        X_seq, y_seq = create_sequences(X_train, y_train, window)
         print(f"Training on {X_seq.shape[0]} sequences of length {window}.")
         
         # --- Hyperparameter Tuning ---
@@ -211,7 +209,7 @@ def main():
         print(f"R²: {r2_score(train_true_inv, train_pred_inv):.2f}")
         
         # ---------- Custom Forecast Using Future Data from Dataset ----------
-        # Assume your dataset now includes accurate forecasted features beyond the historical period.
+        # Your dataset now contains accurate forecasted features for the future.
         # Define custom forecast period:
         custom_start = pd.to_datetime("2025-01-06 00:00")
         custom_end = pd.to_datetime("2025-01-13 00:00")
@@ -219,30 +217,48 @@ def main():
         if custom_df.empty:
             raise ValueError("No future data found for the custom forecast period in the dataset.")
         
-        # For sequence creation, we need the preceding window from historical data:
+        # For sequence creation, take the last 'window' rows preceding custom_start from the full dataset
         history_window = df[df['datetime'] < custom_start].tail(window)
         combined_df = pd.concat([history_window, custom_df]).reset_index(drop=True)
         combined_features = scaler_x.transform(combined_df[FEATURES])
         combined_timestamps = combined_df['datetime'].tolist()
         X_combined_seq, seq_timestamps = create_sequences_with_timestamps(combined_features, combined_timestamps, window)
         
-        # Since combined_df length = window + len(custom_df), the last len(custom_df) sequences correspond to the forecast period.
+        # The last len(custom_df) sequences correspond to the custom period
         custom_pred_seq = X_combined_seq[-len(custom_df):]
         custom_pred = best_model.predict(custom_pred_seq)
         custom_pred_inv = scaler_y.inverse_transform(custom_pred).flatten()
         
         # Build DataFrame for custom forecast predictions
-        # The corresponding timestamps are the last len(custom_df) timestamps from seq_timestamps.
         pred_timestamps = seq_timestamps[-len(custom_df):]
         custom_forecast = pd.DataFrame({
             'datetime': pred_timestamps,
             'predicted_price': custom_pred_inv
         })
         
-        # Build DataFrame with actual prices from the dataset for the custom period
-        actual_df = custom_df[['datetime', TARGET]].rename(columns={TARGET: 'actual_price'})
+        # Build DataFrame with actual custom prices (provided manually)
+        actual_prices = [
+            27.52, 19.26, 11.35, 9.20, 10.00, 14.81, 23.82, 31.72, 41.37, 36.36, 34.69, 32.83,
+            31.28, 28.60, 25.61, 26.32, 26.87, 31.66, 31.58, 28.74, 26.59, 13.82, 26.94, 12.99,
+            19.07, 8.71, 8.90, 5.01, 5.13, 5.80, 48.86, 76.83, 85.08, 84.24, 75.25, 62.80,
+            62.44, 63.90, 72.56, 78.11, 79.98, 96.03, 101.11, 86.21, 78.01, 72.45, 72.45, 50.04,
+            71.05, 68.01, 63.34, 57.01, 66.29, 72.07, 82.70, 100.73, 128.22, 108.18, 94.65, 100.01,
+            89.99, 97.20, 110.19, 127.80, 135.82, 155.46, 149.23, 146.48, 136.86, 127.86, 115.92, 103.59,
+            101.44, 100.00, 98.77, 95.22, 98.28, 102.65, 133.54, 148.80, 164.88, 156.15, 147.64, 140.21,
+            128.18, 121.15, 123.95, 127.53, 123.75, 130.91, 134.75, 125.44, 119.23, 104.99, 101.10, 88.19,
+            84.79, 80.23, 71.29, 69.05, 69.89, 83.90, 99.09, 123.92, 139.47, 136.92, 123.57, 113.59,
+            107.43, 105.01, 110.01, 128.69, 134.87, 142.56, 144.12, 141.05, 134.82, 122.51, 119.77, 111.71,
+            106.64, 98.99, 95.71, 89.45, 88.35, 88.40, 88.13, 94.68, 107.65, 103.14, 101.13, 99.56,
+            96.74, 93.15, 94.90, 104.89, 112.12, 119.80, 122.34, 114.85, 111.19, 104.80, 103.07, 105.69,
+            83.58, 83.79, 86.75, 84.20, 85.00, 83.75, 85.90, 101.75, 114.67, 120.07, 117.77, 105.61,
+            102.99, 99.61, 104.74, 118.70, 132.92, 141.00, 146.66, 143.66, 134.86, 127.49, 121.20, 114.90
+        ]
+        custom_dates = pd.date_range(start="2025-01-06 00:00", periods=len(actual_prices), freq='H')
+        actual_df = pd.DataFrame({
+            'datetime': custom_dates,
+            'actual_price': actual_prices
+        })
         
-        # Evaluate custom forecast
         mae_custom = mean_absolute_error(actual_df['actual_price'], custom_forecast['predicted_price'])
         rmse_custom = np.sqrt(mean_squared_error(actual_df['actual_price'], custom_forecast['predicted_price']))
         r2_custom = r2_score(actual_df['actual_price'], custom_forecast['predicted_price'])
@@ -252,7 +268,7 @@ def main():
         print(f"RMSE: {rmse_custom:.2f}")
         print(f"R²: {r2_custom:.2f}")
         
-        # Plot predicted vs. actual prices
+        # Plot predicted vs actual comparison
         plt.figure(figsize=(14,7))
         plt.plot(custom_forecast['datetime'], custom_forecast['predicted_price'], label='Predicted Price', marker='o')
         plt.plot(actual_df['datetime'], actual_df['actual_price'], label='Actual Price', marker='x')
