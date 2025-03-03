@@ -115,34 +115,30 @@ print(f"Test MAE: {mae:.2f}, RMSE: {rmse:.2f}, MAPE: {mape:.2f}%")
 # --------------------------
 # 7. Future Prediction with Actual Features
 # --------------------------
-
 try:
-    # Read the CSV file with tab delimiter
-    future_df = pd.read_csv('data/future-data.csv', delimiter='\t')
+    # Use the correct future-data CSV file if available
+    future_df = pd.read_csv('data/future-data.csv', parse_dates=['start date/time'])
+    # Don't overwrite future_df's dates with historical df's dates
+    # future_df['start date/time'] = pd.to_datetime(df['start date/time'], errors='coerce')
+    future_df.dropna(subset=['start date/time'], inplace=True)
+    future_df.sort_values('start date/time', inplace=True)
+    
+    # Strip leading/trailing spaces from column names
+    future_df.columns = future_df.columns.str.strip()
+    print("Stripped column names:", future_df.columns.tolist())
+    
+    if 'start date/time' not in future_df.columns:
+        print("Error: 'start date/time' column not found in the CSV file.")
+        print("Available columns:", future_df.columns.tolist())
+        exit()
 except Exception as e:
     print(f"Error reading CSV file: {e}")
     exit()
 
-# Check if the DataFrame is empty
-if future_df.empty:
-    print("Error: The CSV file is empty or could not be read.")
-    exit()
+# Let Pandas auto-parse if dates are in ISO format; remove forced format if not needed
+future_df['start date/time'] = pd.to_datetime(future_df['start date/time'], dayfirst=True, errors='coerce')
 
-# Print column names to verify
-print("Columns in future_df:", future_df.columns)
-
-# Check if 'start date/time' column exists
-if 'start date/time' not in future_df.columns:
-    print("Error: 'start date/time' column not found in the CSV file.")
-    exit()
-
-# Convert 'start date/time' to datetime
-future_df['start date/time'] = pd.to_datetime(
-    future_df['start date/time'],
-    format='%d/%m/%Y %H:%M'
-)
-
-# Drop unused empty column
+# Drop unused columns if necessary
 if 'day_price' in future_df.columns:
     future_df = future_df.drop(columns=['day_price'])
 
@@ -157,7 +153,7 @@ for col in numeric_cols:
         future_df[col] = (
             future_df[col]
             .astype(str)
-            .str.replace(',', '')  
+            .str.replace(',', '')  # Remove commas
             .str.strip()
             .replace('', np.nan)
             .astype(float)
@@ -186,6 +182,9 @@ features = [
     'load_lag_24', 'hour_sin', 'hour_cos', 'day_of_week_sin'
 ]
 
+# Initialize the predicted_price column
+future_df['predicted_price'] = np.nan
+
 for idx in future_df.index:
     current_time = future_df.loc[idx, 'start date/time']
     
@@ -193,30 +192,44 @@ for idx in future_df.index:
     lag_24_time = current_time - pd.Timedelta(hours=24)
     lag_168_time = current_time - pd.Timedelta(hours=168)
     
-    # Fetch lag values from historical data
+    # Set price_lag_24 and load_lag_24
     if lag_24_time <= df['start date/time'].max():
+        # If the lag time falls within historical data
         lag_24_row = df[df['start date/time'] == lag_24_time]
         if not lag_24_row.empty:
-            future_df.loc[idx, 'price_lag_24'] = lag_24_row['denoised_price'].values[0].astype(float)
-            future_df.loc[idx, 'load_lag_24'] = lag_24_row['grid_load'].values[0].astype(float)
+            future_df.loc[idx, 'price_lag_24'] = lag_24_row['denoised_price'].values[0]
+            future_df.loc[idx, 'load_lag_24'] = lag_24_row['grid_load'].values[0]
         else:
-            future_df.loc[idx, 'price_lag_24'] = df['denoised_price'].iloc[-1].astype(float)
-            future_df.loc[idx, 'load_lag_24'] = df['grid_load'].iloc[-1].astype(float)
+            future_df.loc[idx, 'price_lag_24'] = df['denoised_price'].iloc[-1]
+            future_df.loc[idx, 'load_lag_24'] = df['grid_load'].iloc[-1]
     else:
+        # If the lag time is in the future region, check if a predicted price exists
         lag_24_row = future_df[future_df['start date/time'] == lag_24_time]
-        if not lag_24_row.empty:
-            future_df.loc[idx, 'price_lag_24'] = lag_24_row['predicted_price'].values[0].astype(float)
-            future_df.loc[idx, 'load_lag_24'] = lag_24_row['grid_load'].values[0].astype(float)
+        if not lag_24_row.empty and pd.notna(lag_24_row.iloc[0].get('predicted_price', np.nan)):
+            future_df.loc[idx, 'price_lag_24'] = lag_24_row['predicted_price'].values[0]
+            future_df.loc[idx, 'load_lag_24'] = lag_24_row['grid_load'].values[0]
         else:
-            future_df.loc[idx, 'price_lag_24'] = future_df['predicted_price'].iloc[-1].astype(float)
-            future_df.loc[idx, 'load_lag_24'] = future_df['grid_load'].iloc[-1].astype(float)
+            # Try to use the most recent predicted price from earlier rows, if available
+            valid_preds = future_df.loc[:idx-1, 'predicted_price']
+            if valid_preds.notna().any():
+                last_pred = valid_preds.iloc[-1]
+                future_df.loc[idx, 'price_lag_24'] = last_pred
+            else:
+                # Fallback to historical value if no prediction exists yet
+                future_df.loc[idx, 'price_lag_24'] = df['denoised_price'].iloc[-1]
+            # For load, use the last available grid_load from future data or fallback
+            if idx > future_df.index.min():
+                # Use the grid_load from the previous row in future_df if available
+                future_df.loc[idx, 'load_lag_24'] = future_df.loc[idx-1, 'grid_load']
+            else:
+                future_df.loc[idx, 'load_lag_24'] = df['grid_load'].iloc[-1]
     
-    # Handle 168h lag
+    # Handle 168-hour lag (using historical data only)
     lag_168_row = df[df['start date/time'] == lag_168_time]
     if not lag_168_row.empty:
-        future_df.loc[idx, 'price_lag_168'] = lag_168_row['denoised_price'].values[0].astype(float)
+        future_df.loc[idx, 'price_lag_168'] = lag_168_row['denoised_price'].values[0]
     else:
-        future_df.loc[idx, 'price_lag_168'] = df['denoised_price'].iloc[-1].astype(float)
+        future_df.loc[idx, 'price_lag_168'] = df['denoised_price'].iloc[-1]
     
     # Ensure features are numeric
     try:
@@ -226,6 +239,7 @@ for idx in future_df.index:
         print("Problematic row:", future_df.loc[idx])
         exit()
     
+    # Make the prediction for the current row
     future_df.loc[idx, 'predicted_price'] = model.predict([feature_values])[0]
 
 # Extract predictions
@@ -389,8 +403,8 @@ actual_df = pd.DataFrame(actual_data)
 actual_df['start date/time'] = pd.to_datetime(actual_df['start date/time'])
 
 # Merge predictions with actual data
-if not future_subset.empty and 'predicted_price' in future_subset.columns:
-    comparison_df = pd.merge(future_subset, actual_df, on='start date/time', how='inner')
+if not predictions_from_06.empty and 'predicted_price' in predictions_from_06.columns:
+    comparison_df = pd.merge(predictions_from_06, actual_df, on='start date/time', how='inner')
     
     if not comparison_df.empty:
         plt.figure(figsize=(12, 6))
