@@ -26,7 +26,6 @@ class AttentionLayer(Layer):
         self.W1 = Dense(units)
         self.W2 = Dense(units)
         self.V = Dense(1)
-
     def call(self, inputs: tf.Tensor) -> tf.Tensor:
         score = self.V(K.tanh(self.W1(inputs) + self.W2(inputs)))
         attention_weights = K.softmax(score, axis=1)
@@ -50,9 +49,7 @@ def wavelet_denoise_exog(series, wavelet='db4', level=1):
 def load_and_preprocess(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     print("Original columns detected:", df.columns.tolist())
-    
-    # Clean column names:
-    # Strip spaces, lower-case, replace spaces, hyphens, and slashes with underscores,
+    # Clean column names: strip spaces, lower-case, replace spaces, hyphens, slashes with underscores,
     # and remove parentheses.
     df.columns = (df.columns.str.strip()
                          .str.lower()
@@ -62,12 +59,13 @@ def load_and_preprocess(path: str) -> pd.DataFrame:
                          .str.replace('[()]', '', regex=True))
     print("Standardized columns:", df.columns.tolist())
     
-    # Rename columns to match our code expectations:
+    # Rename columns to expected names:
     rename_dict = {
         'start_date_time': 'datetime',
         'day_price': 'price',
         'grid_load': 'total_consumption',
-        'wind_speed_100m_kmh': 'wind_speed_100m'
+        'wind_speed_100m_kmh': 'wind_speed_100m',
+        'wind_speed_100m_km_h': 'wind_speed_100m'
     }
     df.rename(columns=rename_dict, inplace=True)
     
@@ -252,9 +250,9 @@ def main():
         ]
         TARGET = 'price'
         
-        # Restrict dataset to 01/01/2023 - 01/01/2025
-        df = df[(df['datetime'] >= pd.to_datetime("01/01/2023 00:00:00")) &
-                (df['datetime'] <= pd.to_datetime("01/01/2025 23:00:00"))]
+        # Use the full dataset (do not restrict to a fixed range)
+        # If you want to restrict, adjust the dates accordingly.
+        print(f"Using full dataset with date range {df['datetime'].min()} to {df['datetime'].max()}")
         
         train_df = df[df[TARGET].notna()].copy()
         scaler_x = StandardScaler()
@@ -305,12 +303,12 @@ def main():
         print(f"R²: {r2_train:.2f}")
         print(f"MAPE: {mape_train:.2f}%")
         
-        # Set custom forecast period within dataset range
-        custom_start = pd.to_datetime("2025-01-01 00:00")
-        custom_end = pd.to_datetime("2025-01-01 23:00")
+        # Set custom forecast period within the dataset range.
+        # For this example, we choose the last full day in the dataset.
         max_date = df['datetime'].max()
+        custom_start = pd.to_datetime(max_date.date()) - pd.Timedelta(hours=23)
+        custom_end = pd.to_datetime(max_date.date()) + pd.Timedelta(hours=23)  # last full day's 24 hours
         if custom_end > max_date:
-            print(f"Custom end {custom_end} exceeds dataset max date {max_date}, adjusting custom_end.")
             custom_end = max_date
         
         hist_df = df[df['datetime'] < custom_start]
@@ -328,6 +326,8 @@ def main():
             window=window
         )
         
+        # Example: Actual prices for the custom forecast period
+        # (Update these values to match your ground truth for the chosen forecast period.)
         actual_prices = [
             27.52, 19.26, 11.35, 9.20, 10.00, 14.81, 23.82, 31.72, 41.37, 36.36, 34.69, 32.83,
             31.28, 28.60, 25.61, 26.32, 26.87, 31.66, 31.58, 28.74, 26.59, 13.82, 26.94, 12.99
