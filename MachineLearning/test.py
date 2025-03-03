@@ -1,9 +1,11 @@
 import numpy as np
 import pandas as pd
 import pywt
+import optuna
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from xgboost import XGBRegressor
 import matplotlib.pyplot as plt
+from sklearn.model_selection import TimeSeriesSplit
 
 # --------------------------
 # 1. Data Loading & Preprocessing
@@ -41,12 +43,17 @@ df['denoised_price'] = wavelet_denoise(df['day_price'])
 # --------------------------
 # 3. Feature Engineering
 # --------------------------
+
 # Create lag features
 for lag in [24, 168]:
     df[f'price_lag_{lag}'] = df['denoised_price'].shift(lag)
     df[f'load_lag_{lag}'] = df['grid_load'].shift(lag)
 
-# Drop the first 168 rows
+# Add rolling window features (24-hour rolling mean and std)
+df['price_roll_mean_24'] = df['denoised_price'].rolling(window=24).mean()
+df['price_roll_std_24'] = df['denoised_price'].rolling(window=24).std()
+
+# Drop the first 168 rows to ensure lag features are available
 df = df.iloc[168:]
 
 # Extract datetime features
@@ -58,10 +65,15 @@ df['hour_sin'] = np.sin(2 * np.pi * df['Hour'] / 24)
 df['hour_cos'] = np.cos(2 * np.pi * df['Hour'] / 24)
 df['day_of_week_sin'] = np.sin(2 * np.pi * df['day of week'] / 7)
 
-# Fill remaining NaNs
-lag_cols = [f'price_lag_24', f'price_lag_168', f'load_lag_24']
-df[lag_cols] = df[lag_cols].ffill().bfill()
+# Fill remaining NaNs in lag and rolling features
+extra_cols = [f'price_lag_24', f'price_lag_168', f'load_lag_24', 'price_roll_mean_24', 'price_roll_std_24']
+df[extra_cols] = df[extra_cols].ffill().bfill()
 df[essential_cols] = df[essential_cols].ffill().bfill()
+
+# Apply a log-transformation to the denoised target (with a small epsilon for stability)
+epsilon = 1e-8
+df['log_denoised_price'] = np.log(df['denoised_price'] + epsilon)
+
 
 # --------------------------
 # 4. Temporal Data Split
@@ -74,7 +86,7 @@ test = df.iloc[split_idx:]
 print(f"Training samples: {len(train)}, Testing samples: {len(test)}")
 
 # --------------------------
-# 5. Model Training
+# 5. Model Training + Bayesian Optimization with Optuna
 # --------------------------
 features = [
     'temperature_2m', 'precipitation (mm)', 'wind_speed_100m (km/h)',
@@ -82,33 +94,57 @@ features = [
     'load_lag_24', 'hour_sin', 'hour_cos', 'day_of_week_sin'
 ]
 
-model = XGBRegressor(
-    n_estimators=1000,
-    learning_rate=0.01,
-    max_depth=5,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    early_stopping_rounds=50,
-    verbosity=0
-)
+def objective(trial):
+    params = {
+        'n_estimators': trial.suggest_int('n_estimators', 500, 2000),
+        'learning_rate': trial.suggest_float('learning_rate', 0.001, 0.05, log=True),
+        'max_depth': trial.suggest_int('max_depth', 3, 12),
+        'subsample': trial.suggest_float('subsample', 0.5, 1.0),
+        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+        'min_child_weight': trial.suggest_int('min_child_weight', 1, 20),
+        'gamma': trial.suggest_float('gamma', 0, 5),
+        'reg_alpha': trial.suggest_float('reg_alpha', 0, 1.0),
+        'reg_lambda': trial.suggest_float('reg_lambda', 0, 1.0),
+        'verbosity': 0
+    }
+    
+    tscv = TimeSeriesSplit(n_splits=5)
+    rmses = []
+    
+    for train_idx, val_idx in tscv.split(train):
+        X_train, X_val = train.iloc[train_idx][features], train.iloc[val_idx][features]
+        y_train, y_val = train.iloc[train_idx]['denoised_price'], train.iloc[val_idx]['denoised_price']
+        
+        model = XGBRegressor(**params, early_stopping_rounds=50)
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        preds = model.predict(X_val)
+        rmse = np.sqrt(mean_squared_error(y_val, preds))
+        rmses.append(rmse)
+    
+    return np.mean(rmses)
 
-model.fit(
-    train[features],
-    train['denoised_price'],
-    eval_set=[(test[features], test['denoised_price'])],
-    verbose=False
-)
+# Increase the number of trials for more robust hyperparameter tuning
+study = optuna.create_study(direction='minimize')
+study.optimize(objective, n_trials=200)
+print("Best hyperparameters:", study.best_trial.params)
 
 # --------------------------
 # 6. Evaluation
 # --------------------------
+best_params = study.best_trial.params
+final_model = XGBRegressor(**best_params, early_stopping_rounds=50, verbosity=0)
+final_model.fit(train[features], train['denoised_price'],
+                eval_set=[(test[features], test['denoised_price'])],
+                verbose=False)
+
+test_preds = final_model.predict(test[features])
 def calculate_metrics(y_true, y_pred):
     mae = mean_absolute_error(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
     mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
     return mae, rmse, mape
 
-test_preds = model.predict(test[features])
+test_preds = final_model.predict(test[features])
 mae, rmse, mape = calculate_metrics(test['denoised_price'], test_preds)
 print(f"Test MAE: {mae:.2f}, RMSE: {rmse:.2f}, MAPE: {mape:.2f}%")
 
@@ -240,7 +276,7 @@ for idx in future_df.index:
         exit()
     
     # Make the prediction for the current row
-    future_df.loc[idx, 'predicted_price'] = model.predict([feature_values])[0]
+    future_df.loc[idx, 'predicted_price'] = final_model.predict([feature_values])[0]
 
 # Extract predictions
 predictions_from_06 = future_df[future_df['start date/time'] >= '2025-01-06']
