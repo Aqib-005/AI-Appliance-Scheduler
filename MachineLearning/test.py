@@ -117,6 +117,7 @@ print(f"Test MAE: {mae:.2f}, RMSE: {rmse:.2f}, MAPE: {mape:.2f}%")
 # --------------------------
 
 try:
+    # Read the CSV file with tab delimiter
     future_df = pd.read_csv('data/future-data.csv', delimiter='\t')
 except Exception as e:
     print(f"Error reading CSV file: {e}")
@@ -156,7 +157,7 @@ for col in numeric_cols:
         future_df[col] = (
             future_df[col]
             .astype(str)
-            .str.replace(',', '')
+            .str.replace(',', '')  
             .str.strip()
             .replace('', np.nan)
             .astype(float)
