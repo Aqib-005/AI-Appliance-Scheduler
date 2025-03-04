@@ -1,289 +1,275 @@
-import numpy as np
 import pandas as pd
-import pywt
-import optuna
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-from xgboost import XGBRegressor
-import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.preprocessing import RobustScaler
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error
+import xgboost as xgb
+import matplotlib.pyplot as plt
+import optuna
+from optuna.samplers import TPESampler
+import joblib
 
-# --------------------------
-# 1. Data Loading & Preprocessing
-# --------------------------
-df = pd.read_csv('data/merged-data.csv', parse_dates=['start date/time'])
-df['start date/time'] = pd.to_datetime(df['start date/time'], errors='coerce')
-df.dropna(subset=['start date/time'], inplace=True)
-df.sort_values('start date/time', inplace=True)
+# Function to clean numeric columns
+def clean_numeric_column(series):
+    """Clean numeric columns by replacing commas with dots, removing spaces, and converting to numeric."""
+    return pd.to_numeric(
+        series.astype(str)
+            .str.replace(',', '.')  # Replace comma with dot
+            .str.replace(' ', '')   # Remove spaces
+            .str.replace('–', '-')  # Replace en dash with minus
+            .str.replace(',', ''),  # Remove any remaining commas
+        errors='coerce'
+    )
 
-# Convert key numeric columns to numeric types
-numeric_cols = ['temperature_2m', 'wind_speed_100m (km/h)', 'grid_load']
-for col in numeric_cols:
-    df[col] = pd.to_numeric(df[col], errors='coerce')
+# Load historical data
+try:
+    hist_data = pd.read_csv("data/merged-data.csv")
+    print(f"Loaded historical data with {hist_data.shape[0]} rows and {hist_data.shape[1]} columns.")
+except FileNotFoundError:
+    raise FileNotFoundError("Could not find 'data/merged-data.csv'. Please check the file path.")
 
-# Convert target column to numeric
-df['day_price'] = pd.to_numeric(df['day_price'], errors='coerce')
+# Rename columns for consistency
+hist_data.rename(columns={
+    'start date/time': 'StartDateTime',
+    'day_price': 'Price',
+    'grid_load': 'total-consumption',
+    'day of the week': 'DayOfWeek'
+}, inplace=True)
 
-# Fill missing values in essential columns
-essential_cols = ['day_price'] + numeric_cols
-df[essential_cols] = df[essential_cols].ffill().bfill()
+# Verify required columns exist
+required_cols = ['StartDateTime', 'Price', 'total-consumption', 'DayOfWeek']
+missing_cols = [col for col in required_cols if col not in hist_data.columns]
+if missing_cols:
+    raise KeyError(f"Missing required columns in historical data: {missing_cols}")
 
-# --------------------------
-# 2. Wavelet Denoising on Target
-# --------------------------
-def wavelet_denoise(data, wavelet='db4', level=3):
-    coeff = pywt.wavedec(data, wavelet, mode='per', level=level)
-    sigma = (1 / 0.6745) * np.median(np.abs(coeff[-level] - np.median(coeff[-level])))
-    uthresh = sigma * np.sqrt(2 * np.log(len(data)))
-    coeff[1:] = [pywt.threshold(c, value=uthresh, mode='soft') for c in coeff[1:]]
-    return pywt.waverec(coeff, wavelet, mode='per')[:len(data)]
-
-df['denoised_price'] = wavelet_denoise(df['day_price'])
-
-# --------------------------
-# 3. Feature Engineering
-# --------------------------
-
-# Create lag features
-for lag in [24, 168]:
-    df[f'price_lag_{lag}'] = df['denoised_price'].shift(lag)
-    df[f'load_lag_{lag}'] = df['grid_load'].shift(lag)
-
-# Add rolling window features (24-hour rolling mean and std)
-df['price_roll_mean_24'] = df['denoised_price'].rolling(window=24).mean()
-df['price_roll_std_24'] = df['denoised_price'].rolling(window=24).std()
-
-# Drop the first 168 rows to ensure lag features are available
-df = df.iloc[168:]
-
-# Extract datetime features
-df['Hour'] = df['start date/time'].dt.hour
-df['day of week'] = df['start date/time'].dt.dayofweek
-
-# Create cyclical features
-df['hour_sin'] = np.sin(2 * np.pi * df['Hour'] / 24)
-df['hour_cos'] = np.cos(2 * np.pi * df['Hour'] / 24)
-df['day_of_week_sin'] = np.sin(2 * np.pi * df['day of week'] / 7)
-
-# Fill remaining NaNs in lag and rolling features
-extra_cols = [f'price_lag_24', f'price_lag_168', f'load_lag_24', 'price_roll_mean_24', 'price_roll_std_24']
-df[extra_cols] = df[extra_cols].ffill().bfill()
-df[essential_cols] = df[essential_cols].ffill().bfill()
-
-# Apply a log-transformation to the denoised target (with a small epsilon for stability)
-epsilon = 1e-8
-df['log_denoised_price'] = np.log(df['denoised_price'] + epsilon)
-
-# --------------------------
-# 4. Temporal Data Split
-# --------------------------
-# Define temporal cutoff
-split_idx = int(len(df) * 0.8)
-train = df.iloc[:split_idx]
-test = df.iloc[split_idx:]
-
-print(f"Training samples: {len(train)}, Testing samples: {len(test)}")
-
-# --------------------------
-# 5. Model Training + Bayesian Optimization with Optuna
-# --------------------------
-features = [
-    'temperature_2m', 'wind_speed_100m (km/h)', 'grid_load',
-    'price_lag_24', 'price_lag_168', 'load_lag_24',
-    'hour_sin', 'hour_cos', 'day_of_week_sin'
+# Columns to clean and convert to numeric
+numeric_cols = [
+    'Price', 'total-consumption', 'temperature_2m',
+    'precipitation (mm)', 'rain (mm)', 'snowfall (cm)',
+    'wind_speed_100m (km/h)', 'relative_humidity_2m (%)',
+    'weather_code (wmo code)'
 ]
 
+# Clean numeric columns
+for col in numeric_cols:
+    if col in hist_data.columns:
+        hist_data[col] = clean_numeric_column(hist_data[col])
+
+# Convert datetime
+hist_data['StartDateTime'] = pd.to_datetime(
+    hist_data['StartDateTime'], 
+    format='%d/%m/%Y %H:%M', 
+    errors='coerce'
+)
+hist_data = hist_data.sort_values('StartDateTime').reset_index(drop=True)
+
+# Drop rows with NaT in 'StartDateTime'
+print(f"Number of NaT in 'StartDateTime': {hist_data['StartDateTime'].isna().sum()}")
+hist_data = hist_data.dropna(subset=['StartDateTime'])
+print(f"Rows after dropping NaT 'StartDateTime': {hist_data.shape[0]}")
+
+# Map DayOfWeek to numeric
+day_map = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 'Friday': 4, 'Saturday': 5, 'Sunday': 6}
+hist_data['DayOfWeek'] = hist_data['DayOfWeek'].str.title().map(day_map)
+
+# Drop rows with NaN in 'DayOfWeek'
+print(f"Number of NaN in 'DayOfWeek' after mapping: {hist_data['DayOfWeek'].isna().sum()}")
+hist_data = hist_data.dropna(subset=['DayOfWeek'])
+print(f"Rows after dropping unmapped 'DayOfWeek': {hist_data.shape[0]}")
+
+# Create time features (only DayOfWeek is used in selected features)
+hist_data['Day'] = hist_data['StartDateTime'].dt.day
+hist_data['Hour'] = hist_data['StartDateTime'].dt.hour  # Computed but not used
+
+# Feature engineering (only for selected features)
+hist_data['Lag_Price_1h'] = hist_data['Price'].shift(1)
+hist_data['Lag_Price_24h'] = hist_data['Price'].shift(24)
+hist_data['Rolling_Wind_6h'] = hist_data['wind_speed_100m (km/h)'].rolling(window=6, min_periods=1).mean()
+hist_data['Rolling_Wind_24h'] = hist_data['wind_speed_100m (km/h)'].rolling(window=24, min_periods=1).mean()
+hist_data['Price_StdDev_6h'] = hist_data['Price'].rolling(window=6, min_periods=1).std()
+hist_data['Price_StdDev_24h'] = hist_data['Price'].rolling(window=24, min_periods=1).std()
+
+# Handle missing values with interpolation and mean fallback
+for col in hist_data.columns:
+    if hist_data[col].dtype in [np.float64, np.int64]:
+        hist_data[col] = hist_data[col].interpolate(method='linear', limit_direction='both')
+        mean_val = hist_data[col].mean()
+        hist_data[col] = hist_data[col].fillna(mean_val if not pd.isna(mean_val) else 0)
+
+print(f"Rows after feature engineering and imputation: {hist_data.shape[0]}")
+
+# Check for NaNs
+nan_counts = hist_data.isna().sum()
+print("NaN counts per column:\n", nan_counts[nan_counts > 0])
+
+# Define selected features and target
+selected_features = [
+    'temperature_2m', 'weather_code (wmo code)', 'wind_speed_100m (km/h)', 'DayOfWeek',
+    'Lag_Price_1h', 'Lag_Price_24h', 'Rolling_Wind_6h', 'Rolling_Wind_24h',
+    'Price_StdDev_6h', 'Price_StdDev_24h'
+]
+target = 'Price'
+
+# Drop rows with NaNs in selected features and target
+hist_data.dropna(subset=selected_features + [target], inplace=True)
+print(f"Rows after dropping NaNs in selected features and target: {hist_data.shape[0]}")
+if hist_data.shape[0] == 0:
+    raise ValueError("DataFrame is empty after dropping NaNs in selected features and target.")
+
+# Prepare data for modeling
+X = hist_data[selected_features]
+y = hist_data[target]
+
+# Robust scaling
+scaler = RobustScaler()
+X_scaled = scaler.fit_transform(X)
+print(f"Scaled features shape: {X_scaled.shape}")
+
+# Time series cross-validation
+tscv = TimeSeriesSplit(n_splits=10)
+
+# Hyperparameter tuning with Optuna
 def objective(trial):
     params = {
-        'n_estimators': trial.suggest_int('n_estimators', 500, 2000),
-        'learning_rate': trial.suggest_float('learning_rate', 0.001, 0.05, log=True),
+        'n_estimators': trial.suggest_int('n_estimators', 100, 500),
         'max_depth': trial.suggest_int('max_depth', 3, 12),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3),
         'subsample': trial.suggest_float('subsample', 0.5, 1.0),
         'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-        'min_child_weight': trial.suggest_int('min_child_weight', 1, 20),
-        'gamma': trial.suggest_float('gamma', 0, 5),
-        'reg_alpha': trial.suggest_float('reg_alpha', 0, 1.0),
-        'reg_lambda': trial.suggest_float('reg_lambda', 0, 1.0),
-        'verbosity': 0
+        'gamma': trial.suggest_float('gamma', 0, 0.5),
+        'min_child_weight': trial.suggest_int('min_child_weight', 1, 7),
+        'reg_alpha': trial.suggest_float('reg_alpha', 0, 20),
+        'reg_lambda': trial.suggest_float('reg_lambda', 0, 20),
+        'random_state': 42,
+        'eval_metric': 'rmse',
+        'early_stopping_rounds': 50
     }
-    
-    tscv = TimeSeriesSplit(n_splits=5)
-    rmses = []
-    
-    for train_idx, val_idx in tscv.split(train):
-        X_train, X_val = train.iloc[train_idx][features], train.iloc[val_idx][features]
-        y_train, y_val = train.iloc[train_idx]['denoised_price'], train.iloc[val_idx]['denoised_price']
-        
-        model = XGBRegressor(**params, early_stopping_rounds=50)
+    scores = []
+    for train_index, val_index in tscv.split(X_scaled):
+        X_train, X_val = X_scaled[train_index], X_scaled[val_index]
+        y_train, y_val = y.iloc[train_index], y.iloc[val_index]
+        model = xgb.XGBRegressor(**params)
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-        preds = model.predict(X_val)
-        rmse = np.sqrt(mean_squared_error(y_val, preds))
-        rmses.append(rmse)
-    
-    return np.mean(rmses)
+        y_pred = model.predict(X_val)
+        scores.append(mean_squared_error(y_val, y_pred))
+    return np.mean(scores)
 
-# Increase the number of trials for more robust hyperparameter tuning
-study = optuna.create_study(direction='minimize')
-study.optimize(objective, n_trials=200)
-print("Best hyperparameters:", study.best_trial.params)
+study = optuna.create_study(direction='minimize', sampler=TPESampler(seed=42))
+study.optimize(objective, n_trials=100)
+best_params = study.best_params
+print(f"Best Parameters: {best_params}")
 
-# --------------------------
-# 6. Evaluation
-# --------------------------
-best_params = study.best_trial.params
-final_model = XGBRegressor(**best_params, early_stopping_rounds=50, verbosity=0)
-final_model.fit(train[features], train['denoised_price'],
-                eval_set=[(test[features], test['denoised_price'])],
-                verbose=False)
+# Train final XGBoost model
+best_xgb = xgb.XGBRegressor(**best_params, random_state=42)
+best_xgb.fit(X_scaled, y)
 
-test_preds = final_model.predict(test[features])
-def calculate_metrics(y_true, y_pred):
-    mae = mean_absolute_error(y_true, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
-    return mae, rmse, mape
+# Model evaluation
+train_index, test_index = list(tscv.split(X_scaled))[-1]
+X_train, X_test = X_scaled[train_index], X_scaled[test_index]
+y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+y_pred = best_xgb.predict(X_test)
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+mae = mean_absolute_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+mape = mean_absolute_percentage_error(y_test, y_pred) * 100
+print("Evaluation Metrics on Historical Data:")
+print(f"RMSE: {rmse}")
+print(f"MAE: {mae}")
+print(f"R²: {r2}")
+print(f"MAPE: {mape}%")
 
-test_preds = final_model.predict(test[features])
-mae, rmse, mape = calculate_metrics(test['denoised_price'], test_preds)
-print(f"Test MAE: {mae:.2f}, RMSE: {rmse:.2f}, MAPE: {mape:.2f}%")
+# Feature importance visualization
+feature_importance = best_xgb.feature_importances_
+feature_importance_df = pd.DataFrame({'Feature': selected_features, 'Importance': feature_importance})
+feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=True)
+plt.figure(figsize=(10, 6))
+plt.barh(feature_importance_df['Feature'], feature_importance_df['Importance'])
+plt.xlabel('Importance')
+plt.ylabel('Feature')
+plt.title('Feature Importance')
+plt.show()
 
-# --------------------------
-# 7. Future Prediction with Actual Features
-# --------------------------
-try:
-    # Use the correct future-data CSV file if available
-    future_df = pd.read_csv('data/future-data.csv', parse_dates=['start date/time'])
-    # Don't overwrite future_df's dates with historical df's dates
-    # future_df['start date/time'] = pd.to_datetime(df['start date/time'], errors='coerce')
-    future_df.dropna(subset=['start date/time'], inplace=True)
-    future_df.sort_values('start date/time', inplace=True)
-    
-    # Strip leading/trailing spaces from column names
-    future_df.columns = future_df.columns.str.strip()
-    print("Stripped column names:", future_df.columns.tolist())
-    
-    if 'start date/time' not in future_df.columns:
-        print("Error: 'start date/time' column not found in the CSV file.")
-        print("Available columns:", future_df.columns.tolist())
-        exit()
-except Exception as e:
-    print(f"Error reading CSV file: {e}")
-    exit()
-
-# Let Pandas auto-parse if dates are in ISO format; remove forced format if not needed
-future_df['start date/time'] = pd.to_datetime(future_df['start date/time'], dayfirst=True, errors='coerce')
-
-# Drop unused columns if necessary
-if 'day_price' in future_df.columns:
-    future_df = future_df.drop(columns=['day_price'])
-
-# Process numeric columns
-numeric_cols = [
-    'temperature_2m', 'wind_speed_100m (km/h)', 'grid_load'
-]
+# Future Forecasting
+future_df = pd.read_csv('data/future-data.csv')
+future_df.rename(columns={
+    'start date/time': 'StartDateTime',
+    'grid_load': 'total-consumption',
+    'day of the week': 'DayOfWeek'
+}, inplace=True)
 
 for col in numeric_cols:
-    if col in future_df.columns:
-        future_df[col] = (
-            future_df[col]
-            .astype(str)
-            .str.replace(',', '')  # Remove commas
-            .str.strip()
-            .replace('', np.nan)
-            .astype(float)
-        )
-    else:
-        print(f"Warning: Column '{col}' not found in future_df.")
+    if col in future_df.columns and col != 'Price':
+        future_df[col] = clean_numeric_column(future_df[col])
 
-# Fill missing values
-future_df[numeric_cols] = future_df[numeric_cols].ffill().bfill()
+future_df['StartDateTime'] = pd.to_datetime(future_df['StartDateTime'], format='%d/%m/%Y %H:%M', errors='coerce')
+future_df['DayOfWeek'] = future_df['DayOfWeek'].str.title().map(day_map)
+future_df.dropna(subset=['StartDateTime', 'DayOfWeek'], inplace=True)
+future_df.sort_values('StartDateTime', inplace=True)
 
-# Create features
-future_df['Hour'] = future_df['start date/time'].dt.hour
-future_df['day of week'] = future_df['start date/time'].dt.dayofweek
-future_df['hour_sin'] = np.sin(2 * np.pi * future_df['Hour'] / 24)
-future_df['hour_cos'] = np.cos(2 * np.pi * future_df['Hour'] / 24)
-future_df['day_of_week_sin'] = np.sin(2 * np.pi * future_df['day of week'] / 7)
+forecast_start_dt = pd.to_datetime('06/01/2025 00:00:00', format='%d/%m/%Y %H:%M:%S')
+forecast_end_dt = pd.to_datetime('12/01/2025 23:00:00', format='%d/%m/%Y %H:%M:%S')
+future_df = future_df[(future_df['StartDateTime'] >= forecast_start_dt) & 
+                      (future_df['StartDateTime'] <= forecast_end_dt)].copy()
 
-# Initialize lag columns
-for col in ['price_lag_24', 'price_lag_168', 'load_lag_24']:
-    future_df[col] = np.nan
+# Imputation for future data
+for col in future_df.columns:
+    if future_df[col].dtype in [np.float64, np.int64]:
+        future_df[col] = future_df[col].interpolate(method='linear', limit_direction='both')
+        mean_val = future_df[col].mean()
+        future_df[col] = future_df[col].fillna(mean_val if not pd.isna(mean_val) else 0)
 
-# Prediction loop
-features = [
-    'temperature_2m', 'wind_speed_100m (km/h)', 'grid_load',
-    'price_lag_24', 'price_lag_168', 'load_lag_24',
-    'hour_sin', 'hour_cos', 'day_of_week_sin'
-]
+future_df.reset_index(drop=True, inplace=True)
 
-# Initialize the predicted_price column
-future_df['predicted_price'] = np.nan
+# Recursive prediction
+last_historical_data = hist_data.tail(24)  # Last 24 hours for initialization
+predictions = []
 
-for idx in future_df.index:
-    current_time = future_df.loc[idx, 'start date/time']
-    
-    # Calculate lag times
-    lag_24_time = current_time - pd.Timedelta(hours=24)
-    lag_168_time = current_time - pd.Timedelta(hours=168)
-    
-    # Set price_lag_24 and load_lag_24
-    if lag_24_time <= df['start date/time'].max():
-        # If the lag time falls within historical data
-        lag_24_row = df[df['start date/time'] == lag_24_time]
-        if not lag_24_row.empty:
-            future_df.loc[idx, 'price_lag_24'] = lag_24_row['denoised_price'].values[0]
-            future_df.loc[idx, 'load_lag_24'] = lag_24_row['grid_load'].values[0]
-        else:
-            future_df.loc[idx, 'price_lag_24'] = df['denoised_price'].iloc[-1]
-            future_df.loc[idx, 'load_lag_24'] = df['grid_load'].iloc[-1]
-    else:
-        # If the lag time is in the future region, check if a predicted price exists
-        lag_24_row = future_df[future_df['start date/time'] == lag_24_time]
-        if not lag_24_row.empty and pd.notna(lag_24_row.iloc[0].get('predicted_price', np.nan)):
-            future_df.loc[idx, 'price_lag_24'] = lag_24_row['predicted_price'].values[0]
-            future_df.loc[idx, 'load_lag_24'] = lag_24_row['grid_load'].values[0]
-        else:
-            # Try to use the most recent predicted price from earlier rows, if available
-            valid_preds = future_df.loc[:idx-1, 'predicted_price']
-            if valid_preds.notna().any():
-                last_pred = valid_preds.iloc[-1]
-                future_df.loc[idx, 'price_lag_24'] = last_pred
-            else:
-                # Fallback to historical value if no prediction exists yet
-                future_df.loc[idx, 'price_lag_24'] = df['denoised_price'].iloc[-1]
-            # For load, use the last available grid_load from future data or fallback
-            if idx > future_df.index.min():
-                # Use the grid_load from the previous row in future_df if available
-                future_df.loc[idx, 'load_lag_24'] = future_df.loc[idx-1, 'grid_load']
-            else:
-                future_df.loc[idx, 'load_lag_24'] = df['grid_load'].iloc[-1]
-    
-    # Handle 168-hour lag (using historical data only)
-    lag_168_row = df[df['start date/time'] == lag_168_time]
-    if not lag_168_row.empty:
-        future_df.loc[idx, 'price_lag_168'] = lag_168_row['denoised_price'].values[0]
-    else:
-        future_df.loc[idx, 'price_lag_168'] = df['denoised_price'].iloc[-1]
-    
-    # Ensure features are numeric
-    try:
-        feature_values = future_df.loc[idx, features].values.astype(float)
-    except ValueError as e:
-        print(f"Error at index {idx}: {e}")
-        print("Problematic row:", future_df.loc[idx])
-        exit()
-    
-    # Make the prediction for the current row
-    future_df.loc[idx, 'predicted_price'] = final_model.predict([feature_values])[0]
+# Initialize histories
+wind_history = last_historical_data['wind_speed_100m (km/h)'].tail(24).tolist()
+price_history = last_historical_data['Price'].tail(24).tolist()
 
-# Extract predictions
-predictions_from_06 = future_df[future_df['start date/time'] >= '2025-01-06']
-print(predictions_from_06[['start date/time', 'predicted_price']])
+for idx, row in future_df.iterrows():
+    # Extract current row features
+    dt = row['StartDateTime']
+    temperature = float(row['temperature_2m'])
+    weather_code = float(row['weather_code (wmo code)'])
+    wind_speed = float(row['wind_speed_100m (km/h)'])
+    DayOfWeek = dt.dayofweek
 
-# --------------------------
-# 8. Plot Actual vs Predicted Prices
-# --------------------------
-# Create a DataFrame for the actual prices using the provided values.
-# You can replace this list with loading from a CSV or other source.
+    # Update histories
+    wind_history.append(wind_speed)
+
+    # Compute rolling features
+    Rolling_Wind_6h = np.mean(wind_history[-6:])
+    Rolling_Wind_24h = np.mean(wind_history[-24:])
+
+    # Lag prices
+    Lag_Price_1h = price_history[-1]
+    Lag_Price_24h = price_history[-24] if len(price_history) >= 24 else last_historical_data['Price'].iloc[-24]
+
+    # Price standard deviations
+    Price_StdDev_6h = np.std(price_history[-6:])
+    Price_StdDev_24h = np.std(price_history[-24:])
+
+    # Assemble feature vector
+    feature_vector = [
+        temperature, weather_code, wind_speed, DayOfWeek,
+        Lag_Price_1h, Lag_Price_24h, Rolling_Wind_6h, Rolling_Wind_24h,
+        Price_StdDev_6h, Price_StdDev_24h
+    ]
+
+    # Scale and predict
+    feature_vector_scaled = scaler.transform([feature_vector])
+    pred_price = best_xgb.predict(feature_vector_scaled)[0]
+    predictions.append(pred_price)
+
+    # Update price history
+    price_history.append(pred_price)
+
+# Append predictions to future_df
+future_df['Predicted Price [Euro/MWh]'] = predictions
+
+# Actual data (assuming your list is complete; abbreviated here)
 actual_data = [
     {"start date/time": "2025-01-06 00:00:00", "actual_price": 27.52},
     {"start date/time": "2025-01-06 01:00:00", "actual_price": 19.26},
@@ -432,25 +418,31 @@ actual_data = [
     {"start date/time": "2025-01-12 00:00:00", "actual_price": 83.58},
 ]
 
+# Convert actual data to DataFrame
 actual_df = pd.DataFrame(actual_data)
 actual_df['start date/time'] = pd.to_datetime(actual_df['start date/time'])
 
-# Merge predictions with actual data
-if not predictions_from_06.empty and 'predicted_price' in predictions_from_06.columns:
-    comparison_df = pd.merge(predictions_from_06, actual_df, on='start date/time', how='inner')
-    
-    if not comparison_df.empty:
-        plt.figure(figsize=(12, 6))
-        plt.plot(comparison_df['start date/time'], comparison_df['predicted_price'], label='Predicted', marker='o')
-        plt.plot(comparison_df['start date/time'], comparison_df['actual_price'], label='Actual', marker='x')
-        plt.xlabel('Date Time')
-        plt.ylabel('Electricity Price')
-        plt.title('Actual vs Predicted Electricity Prices (2025-01-06 to 2025-01-12)')
-        plt.legend()
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.show()
-    else:
-        print("No overlapping data for comparison")
-else:
-    print("No predictions available for plotting")
+# Merge predicted and actual data
+merged_df = pd.merge(future_df[['StartDateTime', 'Predicted Price [Euro/MWh]']], 
+                     actual_df, 
+                     left_on='StartDateTime', 
+                     right_on='start date/time', 
+                     how='inner')
+
+# Plot predicted vs actual prices
+plt.figure(figsize=(14, 7))
+plt.plot(merged_df['StartDateTime'], merged_df['Predicted Price [Euro/MWh]'], 
+         label='Predicted Price', color='blue', marker='o')
+plt.plot(merged_df['StartDateTime'], merged_df['actual_price'], 
+         label='Actual Price', color='red', marker='x')
+plt.xlabel('Date and Time')
+plt.ylabel('Price [Euro/MWh]')
+plt.title('Predicted vs Actual Electricity Prices (06-Jan-2025 to 12-Jan-2025)')
+plt.legend()
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+# Display predictions
+print("\nPredictions for 06-Jan-2025 to 12-Jan-2025:")
+print(future_df[['StartDateTime', 'Predicted Price [Euro/MWh]']].to_string(index=False))
