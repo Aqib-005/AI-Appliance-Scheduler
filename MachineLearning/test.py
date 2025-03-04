@@ -16,8 +16,7 @@ df.dropna(subset=['start date/time'], inplace=True)
 df.sort_values('start date/time', inplace=True)
 
 # Convert key numeric columns to numeric types
-numeric_cols = ['temperature_2m', 'precipitation (mm)', 'wind_speed_100m (km/h)',
-                'relative_humidity_2m (%)', 'grid_load']
+numeric_cols = ['temperature_2m', 'wind_speed_100m (km/h)', 'grid_load']
 for col in numeric_cols:
     df[col] = pd.to_numeric(df[col], errors='coerce')
 
@@ -74,7 +73,6 @@ df[essential_cols] = df[essential_cols].ffill().bfill()
 epsilon = 1e-8
 df['log_denoised_price'] = np.log(df['denoised_price'] + epsilon)
 
-
 # --------------------------
 # 4. Temporal Data Split
 # --------------------------
@@ -89,9 +87,9 @@ print(f"Training samples: {len(train)}, Testing samples: {len(test)}")
 # 5. Model Training + Bayesian Optimization with Optuna
 # --------------------------
 features = [
-    'temperature_2m', 'precipitation (mm)', 'wind_speed_100m (km/h)',
-    'relative_humidity_2m (%)', 'grid_load', 'price_lag_24', 'price_lag_168',
-    'load_lag_24', 'hour_sin', 'hour_cos', 'day_of_week_sin'
+    'temperature_2m', 'wind_speed_100m (km/h)', 'grid_load',
+    'price_lag_24', 'price_lag_168', 'load_lag_24',
+    'hour_sin', 'hour_cos', 'day_of_week_sin'
 ]
 
 def objective(trial):
@@ -180,8 +178,7 @@ if 'day_price' in future_df.columns:
 
 # Process numeric columns
 numeric_cols = [
-    'temperature_2m', 'precipitation (mm)', 'wind_speed_100m (km/h)',
-    'relative_humidity_2m (%)', 'grid_load'
+    'temperature_2m', 'wind_speed_100m (km/h)', 'grid_load'
 ]
 
 for col in numeric_cols:
@@ -213,9 +210,9 @@ for col in ['price_lag_24', 'price_lag_168', 'load_lag_24']:
 
 # Prediction loop
 features = [
-    'temperature_2m', 'precipitation (mm)', 'wind_speed_100m (km/h)',
-    'relative_humidity_2m (%)', 'grid_load', 'price_lag_24', 'price_lag_168',
-    'load_lag_24', 'hour_sin', 'hour_cos', 'day_of_week_sin'
+    'temperature_2m', 'wind_speed_100m (km/h)', 'grid_load',
+    'price_lag_24', 'price_lag_168', 'load_lag_24',
+    'hour_sin', 'hour_cos', 'day_of_week_sin'
 ]
 
 # Initialize the predicted_price column
