@@ -16,30 +16,27 @@ data = pd.read_csv("data/merged-data.csv")
 data.columns = data.columns.str.replace("Ã¸", "°")
 
 # 2. Data cleaning and preprocessing
-# Rename columns for consistency:
-#   - "start date/time" -> "StartDateTime"
-#   - "day of the week" -> "DayOfWeek"
-#   - "germany/luxembourg [?/mwh]" -> "Price"   (this is our target)
-#   - "total (grid load) [mwh]" -> "total-consumption"
-#   - "temperature_2m (°C)" -> "temperature_2m"
 data.rename(columns={
     'start date/time': 'StartDateTime',
-    'day of the week': 'DayOfWeek',
-    'germany/luxembourg [?/mwh]': 'Price',
-    'total (grid load) [mwh]': 'total-consumption',
-    'temperature_2m (°c)': 'temperature_2m',
-    'temperature_2m (°C)': 'temperature_2m'
+    'day_price': 'Price',
+    'grid_load': 'total-consumption',
 }, inplace=True)
 
-# Convert Price and total-consumption to numeric (remove commas if needed)
-data['Price'] = data['Price'].replace({',': ''}, regex=True).astype(float)
-data['total-consumption'] = data['total-consumption'].replace({',': ''}, regex=True).astype(float)
+# Convert numeric columns
+numeric_cols = ['Price', 'total-consumption', 'temperature_2m', 
+               'precipitation (mm)', 'rain (mm)', 'snowfall (cm)',
+               'wind_speed_100m (km/h)', 'relative_humidity_2m (%)']
+for col in numeric_cols:
+    data[col] = data[col].replace({',': ''}, regex=True).astype(float)
 
 # Convert StartDateTime to datetime and sort
 data['StartDateTime'] = pd.to_datetime(data['StartDateTime'], dayfirst=True)
 data = data.sort_values('StartDateTime').reset_index(drop=True)
 
-# Extract time features
+# Impute missing values (forward fill for time series)
+data.fillna(method='ffill', inplace=True)
+
+# Extract time features from datetime (overwriting existing columns)
 data['Year'] = data['StartDateTime'].dt.year
 data['Month'] = data['StartDateTime'].dt.month
 data['Day'] = data['StartDateTime'].dt.day
@@ -49,21 +46,26 @@ data['DayOfWeek'] = data['StartDateTime'].dt.dayofweek  # Monday=0, Sunday=6
 # Create lagged feature for Price
 data['Lag_Price'] = data['Price'].shift(1)
 
-# Add rolling averages for features (24-hour window)
+# Add rolling averages (24-hour window)
 data['Rolling_Temp_24h'] = data['temperature_2m'].rolling(window=24).mean()
 data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(window=24).mean()
 data['Rolling_Load_24h'] = data['total-consumption'].rolling(window=24).mean()
 
-# Drop rows with missing values after lagging/rolling
+# Drop remaining NA after feature engineering
 data = data.dropna()
 
-# 3. Feature selection
+# 3. Feature selection with new weather features
 features = [
-    'temperature_2m', 
-    'wind_speed_100m (km/h)', 
-    'total-consumption', 
-    'Day', 
-    'Hour', 
+    'temperature_2m',
+    'precipitation (mm)',
+    'rain (mm)',
+    'snowfall (cm)',
+    'weather_code (wmo code)',
+    'wind_speed_100m (km/h)',
+    'relative_humidity_2m (%)',
+    'total-consumption',
+    'Day',
+    'Hour',
     'DayOfWeek',
     'Rolling_Temp_24h',
     'Rolling_Wind_24h',
@@ -76,7 +78,7 @@ target = 'Price'
 X = data[features]
 y = data[target]
 
-# Normalize the features
+# Normalize features
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 

@@ -10,60 +10,74 @@ from prophet import Prophet
 # Load the data
 data = pd.read_csv("data/merged-data.csv")
 
-# Data cleaning and preprocessing
-data['Price Germany/Luxembourg [Euro/MWh]'] = data['Price Germany/Luxembourg [Euro/MWh]'].replace({',': ''}, regex=True).astype(float)
-data['Total (grid consumption) [MWh]'] = data['Total (grid consumption) [MWh]'].replace({',': ''}, regex=True).astype(float)
+data.columns = data.columns.str.replace("Ã¸", "°")
 
-# Convert Start date/time to datetime and extract useful time features
-data['Start date/time'] = pd.to_datetime(data['Start date/time'], dayfirst=True)
-data['Year'] = data['Start date/time'].dt.year
-data['Month'] = data['Start date/time'].dt.month
-data['Day'] = data['Start date/time'].dt.day
-data['Hour'] = data['Start date/time'].dt.hour
-data['DayOfWeek'] = data['Start date/time'].dt.dayofweek  # Add day of the week
+# 2. Data cleaning and preprocessing
+data.rename(columns={
+    'start date/time': 'StartDateTime',
+    'day_price': 'Price',
+    'grid_load': 'total-consumption',
+}, inplace=True)
 
-# Create lagged features for target variable
-data['Lag_Price'] = data['Price Germany/Luxembourg [Euro/MWh]'].shift(1)
+# Convert numeric columns
+numeric_cols = ['Price', 'total-consumption', 'temperature_2m', 
+               'precipitation (mm)', 'rain (mm)', 'snowfall (cm)',
+               'wind_speed_100m (km/h)', 'relative_humidity_2m (%)']
+for col in numeric_cols:
+    data[col] = data[col].replace({',': ''}, regex=True).astype(float)
 
-# Add rolling averages for features
-data['Rolling_Temp_24h'] = data['temperature_2m (°C)'].rolling(window=24).mean()
+# Convert StartDateTime to datetime and sort
+data['StartDateTime'] = pd.to_datetime(data['StartDateTime'], dayfirst=True)
+data = data.sort_values('StartDateTime').reset_index(drop=True)
+
+# Impute missing values (forward fill for time series)
+data.fillna(method='ffill', inplace=True)
+
+# Extract time features from datetime (overwriting existing columns)
+data['Year'] = data['StartDateTime'].dt.year
+data['Month'] = data['StartDateTime'].dt.month
+data['Day'] = data['StartDateTime'].dt.day
+data['Hour'] = data['StartDateTime'].dt.hour
+data['DayOfWeek'] = data['StartDateTime'].dt.dayofweek  # Monday=0, Sunday=6
+
+# Create lagged feature for Price
+data['Lag_Price'] = data['Price'].shift(1)
+
+# Add rolling averages (24-hour window)
+data['Rolling_Temp_24h'] = data['temperature_2m'].rolling(window=24).mean()
 data['Rolling_Wind_24h'] = data['wind_speed_100m (km/h)'].rolling(window=24).mean()
-data['Rolling_Load_24h'] = data['Total (grid consumption) [MWh]'].rolling(window=24).mean()
+data['Rolling_Load_24h'] = data['total-consumption'].rolling(window=24).mean()
 
-# Drop rows with missing values after lagging and rolling
+# Drop remaining NA after feature engineering
 data = data.dropna()
 
-# Feature selection based on correlation and engineering
+# 3. Feature selection with new weather features
 features = [
-    'temperature_2m (°C)', 
-    'wind_speed_100m (km/h)', 
-    'Total (grid consumption) [MWh]', 
-    'Day', 
-    'Hour', 
-    'DayOfWeek',  # Added day of the week
-    'Rolling_Temp_24h',  # Added rolling averages
+    'temperature_2m',
+    'precipitation (mm)',
+    'rain (mm)',
+    'snowfall (cm)',
+    'weather_code (wmo code)',
+    'wind_speed_100m (km/h)',
+    'relative_humidity_2m (%)',
+    'total-consumption',
+    'Day',
+    'Hour',
+    'DayOfWeek',
+    'Rolling_Temp_24h',
     'Rolling_Wind_24h',
     'Rolling_Load_24h',
     'Lag_Price'
 ]
-target = 'Price Germany/Luxembourg [Euro/MWh]'
+target = 'Price'
 
 # Subset the data
-data_subset = data[features + [target]]
+X = data[features]
+y = data[target]
 
-# Split data chronologically for train-test
-train_data = data[data['Start date/time'] < '2023-09-30']
-test_data = data[data['Start date/time'] >= '2023-09-30']
-
-X_train = train_data[features]
-y_train = train_data[target]
-X_test = test_data[features]
-y_test = test_data[target]
-
-# Normalize the features
+# Normalize features
 scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
+X_scaled = scaler.fit_transform(X)
 
 # Random Forest Hyperparameter Tuning using RandomizedSearchCV
 param_dist = {
