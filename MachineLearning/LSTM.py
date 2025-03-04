@@ -10,6 +10,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+import joblib
 
 # Seed for reproducibility
 np.random.seed(42)
@@ -69,19 +70,9 @@ hist_data['StartDateTime'] = pd.to_datetime(
 )
 hist_data = hist_data.sort_values('StartDateTime').reset_index(drop=True)
 
-# Check for NaT in 'StartDateTime' and drop those rows
-print(f"Number of NaT in 'StartDateTime': {hist_data['StartDateTime'].isna().sum()}")
-hist_data = hist_data.dropna(subset=['StartDateTime'])
-print(f"Rows after dropping NaT 'StartDateTime': {hist_data.shape[0]}")
-
 # Map DayOfWeek to numeric, standardizing case
 day_map = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 'Friday': 4, 'Saturday': 5, 'Sunday': 6}
 hist_data['DayOfWeek'] = hist_data['DayOfWeek'].str.title().map(day_map)
-
-# Check for NaN in 'DayOfWeek' after mapping and drop those rows
-print(f"Number of NaN in 'DayOfWeek' after mapping: {hist_data['DayOfWeek'].isna().sum()}")
-hist_data = hist_data.dropna(subset=['DayOfWeek'])
-print(f"Rows after dropping unmapped 'DayOfWeek': {hist_data.shape[0]}")
 
 # Create time features
 hist_data['Year'] = hist_data['StartDateTime'].dt.year
@@ -111,9 +102,7 @@ for col in hist_data.columns:
         mean_val = hist_data[col].mean()
         hist_data[col] = hist_data[col].fillna(mean_val if not pd.isna(mean_val) else 0)
 
-print(f"Rows after feature engineering and imputation: {hist_data.shape[0]}")
-
-# Define features and target
+# Define features and target EXACTLY in the order they will be used
 features = [
     'temperature_2m', 'precipitation (mm)', 'rain (mm)', 
     'snowfall (cm)', 'weather_code (wmo code)', 
@@ -129,9 +118,6 @@ target = 'Price'
 
 # Drop rows with NaNs only in the features and target columns
 hist_data.dropna(subset=features + [target], inplace=True)
-print(f"Rows after dropping NaNs in features and target: {hist_data.shape[0]}")
-if hist_data.shape[0] == 0:
-    raise ValueError("DataFrame is empty after dropping NaNs in features and target.")
 
 # Prepare data for modeling
 X = hist_data[features]
@@ -140,6 +126,9 @@ y = hist_data[target]
 # Robust scaling
 scaler_X = RobustScaler()
 scaler_y = RobustScaler()
+
+# Important: Set feature names to avoid warnings
+X.columns = features
 
 X_scaled = scaler_X.fit_transform(X)
 y_scaled = scaler_y.fit_transform(y.values.reshape(-1, 1)).flatten()
@@ -260,100 +249,61 @@ future_df.reset_index(drop=True, inplace=True)
 predictions = []
 last_historical_data = hist_data.tail(time_steps)
 
-# Initialize histories with historical data
-temp_history_6h = last_historical_data['temperature_2m'].tolist()
-temp_history_24h = last_historical_data['temperature_2m'].tolist()
-wind_history_6h = last_historical_data['wind_speed_100m (km/h)'].tolist()
-wind_history_24h = last_historical_data['wind_speed_100m (km/h)'].tolist()
-load_history_6h = last_historical_data['total-consumption'].tolist()
-load_history_24h = last_historical_data['total-consumption'].tolist()
-price_history_1h = last_historical_data['Price'].tolist()
-price_history_6h = last_historical_data['Price'].tolist()
-price_history_24h = last_historical_data['Price'].tolist()
+# Prepare initial features for prediction
+initial_sequence = last_historical_data[features].values
+initial_sequence_scaled = scaler_X.transform(initial_sequence)
 
-# Sequences to track for LSTM prediction
-recent_sequence = last_historical_data[features].values
-
-# Scale the recent sequence
-recent_sequence_scaled = scaler_X.transform(recent_sequence)
-
+# Recursive forecasting
 for idx, row in future_df.iterrows():
-    # Extract current row features
+    # Prepare features for prediction
     dt = row['StartDateTime']
-    temperature = float(row['temperature_2m'])
-    precipitation = float(row['precipitation (mm)'])
-    rain = float(row['rain (mm)'])
-    snowfall = float(row['snowfall (cm)'])
-    weather_code = float(row['weather_code (wmo code)'])
-    wind_speed = float(row['wind_speed_100m (km/h)'])
-    rel_humidity = float(row['relative_humidity_2m (%)'])
-    total_consumption = float(row['total-consumption'])
+    features_for_pred = [
+        row['temperature_2m'], 
+        row['precipitation (mm)'], 
+        row['rain (mm)'], 
+        row['snowfall (cm)'], 
+        row['weather_code (wmo code)'], 
+        row['wind_speed_100m (km/h)'], 
+        row['relative_humidity_2m (%)'], 
+        row['total-consumption'], 
+        dt.day, 
+        dt.hour, 
+        dt.dayofweek,
+        # Use last predicted price or historical price
+        predictions[-1] if predictions else last_historical_data['Price'].iloc[-1],
+        predictions[-6] if len(predictions) >= 6 else last_historical_data['Price'].iloc[-6],
+        predictions[-24] if len(predictions) >= 24 else last_historical_data['Price'].iloc[-24],
+        
+        # Compute and pass rolling features
+        np.mean(initial_sequence_scaled[-6:, features.index('temperature_2m')]),
+        np.mean(initial_sequence_scaled[-24:, features.index('temperature_2m')]),
+        np.mean(initial_sequence_scaled[-6:, features.index('wind_speed_100m (km/h)')]),
+        np.mean(initial_sequence_scaled[-24:, features.index('wind_speed_100m (km/h)')]),
+        np.mean(initial_sequence_scaled[-6:, features.index('total-consumption')]),
+        np.mean(initial_sequence_scaled[-24:, features.index('total-consumption')]),
+        
+        # Price standard deviation
+        np.std(initial_sequence_scaled[-6:, features.index('Price')]),
+        np.std(initial_sequence_scaled[-24:, features.index('Price')])
+    ]
     
-    # Time features
-    Day = dt.day
-    Hour = dt.hour
-    DayOfWeek = dt.dayofweek
-
-    # Update recent sequence with new data
-    new_features = np.array([
-        temperature, precipitation, rain, snowfall, weather_code,
-        wind_speed, rel_humidity, total_consumption, 
-        Day, Hour, DayOfWeek,
-        price_history_1h[-1], price_history_6h[-1], price_history_24h[-1],
-        np.mean(temp_history_6h),
-        np.mean(temp_history_6h),
-        np.mean(temp_history_24h),
-        np.mean(wind_history_6h),
-        np.mean(wind_history_24h),
-        np.mean(load_history_6h),
-        np.mean(load_history_24h),
-        np.std(price_history_6h),
-        np.std(price_history_24h)
-    ])
-
-    # Scale new features
-    new_features_scaled = scaler_X.transform(new_features.reshape(1, -1))
-
-    # Prepare input sequence for LSTM prediction
-    input_sequence_scaled = np.roll(recent_sequence_scaled, -1, axis=0)
-    input_sequence_scaled[-1] = new_features_scaled
-
+    # Scale features
+    features_scaled = scaler_X.transform(np.array(features_for_pred).reshape(1, -1))
+    
+    # Update sliding window
+    initial_sequence_scaled = np.roll(initial_sequence_scaled, -1, axis=0)
+    initial_sequence_scaled[-1] = features_scaled
+    
     # Predict next price
-    pred_scaled = model.predict(input_sequence_scaled.reshape(1, time_steps, input_sequence_scaled.shape[1])).flatten()
+    pred_scaled = model.predict(initial_sequence_scaled.reshape(1, time_steps, initial_sequence_scaled.shape[1])).flatten()
     pred_price = scaler_y.inverse_transform(pred_scaled.reshape(-1, 1))[0][0]
     
-    # Store prediction
     predictions.append(pred_price)
-
-    # Update histories
-    temp_history_6h.append(temperature)
-    temp_history_24h.append(temperature)
-    wind_history_6h.append(wind_speed)
-    wind_history_24h.append(wind_speed)
-    load_history_6h.append(total_consumption)
-    load_history_24h.append(total_consumption)
-    
-    # Truncate histories
-    temp_history_6h = temp_history_6h[-6:]
-    temp_history_24h = temp_history_24h[-24:]
-    wind_history_6h = wind_history_6h[-6:]
-    wind_history_24h = wind_history_24h[-24:]
-    load_history_6h = load_history_6h[-6:]
-    load_history_24h = load_history_24h[-24:]
-    
-    # Update price histories
-    price_history_1h.append(pred_price)
-    price_history_6h.append(pred_price)
-    price_history_24h.append(pred_price)
-    
-    price_history_1h = price_history_1h[-6:]
-    price_history_6h = price_history_6h[-24:]
-    price_history_24h = price_history_24h[-24:]
 
 # Append predictions to future_df
 future_df['Predicted Price [Euro/MWh]'] = predictions
 
-# Actual data for validation (same as previous script)
+# Actual data (same as before)
 actual_data = [
     {"start date/time": "2025-01-06 00:00:00", "actual_price": 27.52},
     {"start date/time": "2025-01-06 01:00:00", "actual_price": 19.26},
