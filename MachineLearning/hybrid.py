@@ -1,46 +1,46 @@
 import pandas as pd
 import numpy as np
-import pywt
 from sklearn.preprocessing import RobustScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error
-import xgboost as xgb
+import lightgbm as lgb
 import matplotlib.pyplot as plt
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, LSTM, Dense, Dropout, Bidirectional, Layer
 from tensorflow.keras.callbacks import EarlyStopping
+import tensorflow as tf
 
-# -------------------------------
+# Custom Attention Layer
+class Attention(Layer):
+    def __init__(self, **kwargs):
+        super(Attention, self).__init__(**kwargs)
+
+    def build(self, input_shape):
+        self.W = self.add_weight(name="att_weight", shape=(input_shape[-1], 1), initializer="normal")
+        self.b = self.add_weight(name="att_bias", shape=(input_shape[1], 1), initializer="zeros")
+        super(Attention, self).build(input_shape)
+
+    def call(self, x):
+        e = tf.keras.backend.tanh(tf.keras.backend.dot(x, self.W) + self.b)
+        a = tf.keras.backend.softmax(e, axis=1)
+        output = x * a
+        return tf.keras.backend.sum(output, axis=1)
+
 # Utility Functions
-# -------------------------------
-
 def clean_numeric_column(series):
-    """Replace commas with dots, remove spaces, and convert to numeric."""
     return pd.to_numeric(
         series.astype(str).str.replace(',', '.').str.replace(' ', '').str.replace('–', '-'),
         errors='coerce'
     )
 
-def wavelet_denoise(series, wavelet='sym4', level=3):
-    """Denoise a signal using discrete wavelet transform."""
-    series_clean = series.interpolate(method='linear', limit_direction='both').fillna(series.mean())
-    coeffs = pywt.wavedec(series_clean, wavelet, level=level)
-    sigma = np.median(np.abs(coeffs[-1])) / 0.6745
-    uthresh = sigma * np.sqrt(2 * np.log(len(series)))
-    denoised_coeffs = [coeffs[0]] + [pywt.threshold(c, uthresh, mode='soft') for c in coeffs[1:]]
-    denoised = pywt.waverec(denoised_coeffs, wavelet)
-    return denoised[:len(series)]
-
 def safe_mape(actual, predicted):
-    """Compute MAPE with protection against division by zero."""
-    mask = np.abs(actual) > 0
+    """Calculate MAPE, avoiding division by zero and handling negative values."""
+    mask = np.abs(actual) > 1e-8  # Avoid division by very small numbers
     actual_safe = np.where(mask, actual, 1e-8)
-    return mean_absolute_percentage_error(actual_safe, predicted) * 100
+    return np.mean(np.abs((actual_safe - predicted) / actual_safe)) * 100
 
-# -------------------------------
 # Load and Preprocess Historical Data
-# -------------------------------
-
 hist_data = pd.read_csv("data/merged-data.csv")
+hist_data.columns = hist_data.columns.str.strip()
 hist_data.rename(columns={
     'start date/time': 'StartDateTime',
     'day_price': 'Price',
@@ -63,33 +63,35 @@ day_map = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 'Friday': 4
 hist_data['DayOfWeek'] = hist_data['DayOfWeek'].str.title().map(day_map)
 hist_data = hist_data.dropna(subset=['DayOfWeek'])
 
-# Time features
+# Enhanced Feature Engineering
 hist_data['Hour'] = hist_data['StartDateTime'].dt.hour
 hist_data['Day'] = hist_data['StartDateTime'].dt.day
 hist_data['Month'] = hist_data['StartDateTime'].dt.month
+hist_data['IsWeekend'] = hist_data['DayOfWeek'].apply(lambda x: 1 if x >= 5 else 0)
+hist_data['Price_Lag1'] = hist_data['Price'].shift(1)
+hist_data['Price_Lag24'] = hist_data['Price'].shift(24)
+hist_data['Price_RollingMean24'] = hist_data['Price'].rolling(window=24, min_periods=1).mean()
+hist_data['Price_RollingStd24'] = hist_data['Price'].rolling(window=24, min_periods=1).std()
+hist_data['Temp_Wind_Interaction'] = hist_data['temperature_2m'] * hist_data['wind_speed_100m (km/h)']
+hist_data['Hourly_Volatility'] = hist_data['Price'].rolling(window=24, min_periods=1).std().shift(1)
 
-# Feature engineering
-hist_data['Lag_Price_1h'] = hist_data['Price'].shift(1)
-hist_data['Lag_Price_6h'] = hist_data['Price'].shift(6)
-hist_data['Lag_Price_24h'] = hist_data['Price'].shift(24)
-hist_data['Rolling_Price_6h'] = hist_data['Price'].rolling(window=6, min_periods=1).mean()
-hist_data['Rolling_Price_24h'] = hist_data['Price'].rolling(window=24, min_periods=1).mean()
-hist_data['Price_Volatility_24h'] = hist_data['Price'].rolling(window=24, min_periods=1).std()
-hist_data['Price_Denoised'] = wavelet_denoise(hist_data['Price'])
-
+# Handle missing values and outliers
 for col in hist_data.columns:
     if hist_data[col].dtype in [np.float64, np.int64]:
+        hist_data[col] = hist_data[col].clip(lower=hist_data[col].quantile(0.01), upper=hist_data[col].quantile(0.99))
         hist_data[col] = hist_data[col].interpolate(method='linear', limit_direction='both').fillna(hist_data[col].mean())
 
 # Define features and target
 features = [
     'total-consumption', 'temperature_2m', 'wind_speed_100m (km/h)', 'relative_humidity_2m (%)',
-    'Lag_Price_1h', 'Lag_Price_6h', 'Lag_Price_24h', 'Rolling_Price_6h', 'Rolling_Price_24h',
-    'Price_Volatility_24h', 'Price_Denoised', 'Hour', 'Day', 'Month', 'DayOfWeek'
+    'Price_Lag1', 'Price_Lag24', 'Price_RollingMean24', 'Price_RollingStd24', 'Temp_Wind_Interaction',
+    'Hourly_Volatility', 'Hour', 'Day', 'Month', 'DayOfWeek', 'IsWeekend'
 ]
 target = 'Price'
 
 valid_features = [col for col in features if col in hist_data.columns and not hist_data[col].isna().all()]
+print("Valid features:", valid_features)
+
 hist_data = hist_data.dropna(subset=valid_features + [target])
 X = hist_data[valid_features]
 y = hist_data[target]
@@ -99,10 +101,7 @@ scaler = RobustScaler()
 X_scaled = scaler.fit_transform(X)
 X_scaled_df = pd.DataFrame(X_scaled, columns=valid_features)
 
-# -------------------------------
-# Hybrid Model Setup
-# -------------------------------
-
+# Create sequences for LSTM
 def create_sequences(X, y, time_steps=24):
     Xs, ys = [], []
     for i in range(len(X) - time_steps):
@@ -116,20 +115,18 @@ split = int(0.8 * len(X_seq))
 X_train_seq, X_val_seq = X_seq[:split], X_seq[split:]
 y_train_seq, y_val_seq = y_seq[:split], y_seq[split:]
 
-# Enhanced LSTM model
-def create_lstm_model(input_shape):
-    model = Sequential([
-        Bidirectional(LSTM(128, return_sequences=True), input_shape=input_shape),
-        Dropout(0.3),
-        Bidirectional(LSTM(64)),
-        Dropout(0.3),
-        Dense(32, activation='relu'),
-        Dense(1)
-    ])
+# Attention-based LSTM model
+def create_attention_lstm_model(input_shape):
+    inputs = Input(shape=input_shape)
+    lstm_out = Bidirectional(LSTM(64, return_sequences=True, dropout=0.2))(inputs)
+    attention_out = Attention()(lstm_out)
+    dense_out = Dense(32, activation='relu')(attention_out)
+    outputs = Dense(1)(dense_out)
+    model = Model(inputs, outputs)
     model.compile(optimizer='adam', loss='mse')
     return model
 
-lstm_model = create_lstm_model((time_steps, X_train_seq.shape[2]))
+lstm_model = create_attention_lstm_model((time_steps, X_train_seq.shape[2]))
 early_stopping = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
 lstm_model.fit(X_train_seq, y_train_seq, epochs=100, batch_size=32, validation_data=(X_val_seq, y_val_seq),
                callbacks=[early_stopping], verbose=1)
@@ -138,31 +135,35 @@ lstm_model.fit(X_train_seq, y_train_seq, epochs=100, batch_size=32, validation_d
 lstm_features_train = lstm_model.predict(X_train_seq)
 lstm_features_val = lstm_model.predict(X_val_seq)
 
-# Combine with original features for XGBoost
-X_train_xgb = np.hstack((X_train_seq[:, -1, :], lstm_features_train))  # Use last timestep + LSTM output
-X_val_xgb = np.hstack((X_val_seq[:, -1, :], lstm_features_val))
+# Combine with original features for LightGBM
+X_train_lgb = np.hstack((X_train_seq[:, -1, :], lstm_features_train))
+X_val_lgb = np.hstack((X_val_seq[:, -1, :], lstm_features_val))
 
-# Define target variables for XGBoost
-y_train_xgb = y_train_seq
-y_val_xgb = y_val_seq
-
-# Train XGBoost model
-xgb_model = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=200, max_depth=5)
-xgb_model.fit(X_train_xgb, y_train_xgb)
+# Train LightGBM model
+lgb_params = {
+    'objective': 'regression',
+    'n_estimators': 500,
+    'learning_rate': 0.05,
+    'max_depth': 6,
+    'num_leaves': 31,
+    'min_child_samples': 20,
+    'subsample': 0.8,
+    'colsample_bytree': 0.8
+}
+lgb_model = lgb.LGBMRegressor(**lgb_params)
+lgb_model.fit(X_train_lgb, y_train_seq)
 
 # Validation evaluation
-y_pred_val = xgb_model.predict(X_val_xgb)
+y_pred_val = lgb_model.predict(X_val_lgb)
 print("\n=== Historical Evaluation ===")
-print(f"RMSE: {np.sqrt(mean_squared_error(y_val_xgb, y_pred_val)):.2f}")
-print(f"MAE: {mean_absolute_error(y_val_xgb, y_pred_val):.2f}")
-print(f"R²: {r2_score(y_val_xgb, y_pred_val):.3f}")
-print(f"MAPE: {safe_mape(y_val_xgb, y_pred_val):.2f}%")
+print(f"RMSE: {np.sqrt(mean_squared_error(y_val_seq, y_pred_val)):.2f}")
+print(f"MAE: {mean_absolute_error(y_val_seq, y_pred_val):.2f}")
+print(f"R²: {r2_score(y_val_seq, y_pred_val):.3f}")
+print(f"MAPE: {safe_mape(y_val_seq, y_pred_val):.2f}%")
 
-# -------------------------------
-# Future Forecasting
-# -------------------------------
-
+# Load and Preprocess Future Data
 future_df = pd.read_csv('data/future-data.csv')
+future_df.columns = future_df.columns.str.strip()
 future_df.rename(columns={
     'start date/time': 'StartDateTime',
     'grid_load': 'total-consumption',
@@ -179,56 +180,50 @@ forecast_start_dt = pd.to_datetime('06/01/2025 00:00:00', format='%d/%m/%Y %H:%M
 forecast_end_dt = pd.to_datetime('12/01/2025 23:00:00', format='%d/%m/%Y %H:%M:%S')
 future_df = future_df[(future_df['StartDateTime'] >= forecast_start_dt) & (future_df['StartDateTime'] <= forecast_end_dt)]
 
-# Feature engineering for future data
+# Time features for future data
 future_df['Hour'] = future_df['StartDateTime'].dt.hour
 future_df['Day'] = future_df['StartDateTime'].dt.day
 future_df['Month'] = future_df['StartDateTime'].dt.month
+future_df['IsWeekend'] = future_df['DayOfWeek'].apply(lambda x: 1 if x >= 5 else 0)
 
-# Initialize with historical data for lags
-last_hist = hist_data.tail(time_steps).copy()
-combined_df = pd.concat([last_hist, future_df], ignore_index=True)
-
-# Rolling prediction
-predictions = []
+# Initialize past prices and sequence
+past_prices = list(hist_data['Price'].tail(time_steps).values)
 current_seq = X_scaled_df.tail(time_steps).values.copy()
 
+predictions = []
+
 for i in range(len(future_df)):
-    # Prepare sequence
-    seq_df = pd.DataFrame(current_seq, columns=valid_features)
-    seq_array = seq_df.values.reshape(1, time_steps, len(valid_features))
-    
-    # LSTM prediction
+    new_row = pd.Series(index=valid_features, dtype=float)
+    for feature in ['total-consumption', 'temperature_2m', 'wind_speed_100m (km/h)', 'relative_humidity_2m (%)', 'Hour', 'Day', 'Month', 'DayOfWeek', 'IsWeekend']:
+        if feature in valid_features and feature in future_df.columns:
+            new_row[feature] = future_df.iloc[i][feature]
+    if 'Temp_Wind_Interaction' in valid_features:
+        new_row['Temp_Wind_Interaction'] = future_df.iloc[i]['temperature_2m'] * future_df.iloc[i]['wind_speed_100m (km/h)']
+    if 'Hourly_Volatility' in valid_features:
+        new_row['Hourly_Volatility'] = np.std(past_prices[-24:]) if len(past_prices) >= 24 else 0
+    if 'Price_Lag1' in valid_features:
+        new_row['Price_Lag1'] = past_prices[-1]
+    if 'Price_Lag24' in valid_features:
+        new_row['Price_Lag24'] = past_prices[-24] if len(past_prices) >= 24 else past_prices[0]
+    if 'Price_RollingMean24' in valid_features:
+        new_row['Price_RollingMean24'] = np.mean(past_prices[-24:]) if len(past_prices) >= 24 else np.mean(past_prices)
+    if 'Price_RollingStd24' in valid_features:
+        new_row['Price_RollingStd24'] = np.std(past_prices[-24:]) if len(past_prices) >= 24 else 0
+
+    new_row = new_row.fillna(0)
+    new_row_scaled = scaler.transform(new_row.to_frame().T)
+    current_seq = np.vstack((current_seq[1:], new_row_scaled))
+    seq_array = current_seq.reshape(1, time_steps, len(valid_features))
     lstm_pred = lstm_model.predict(seq_array, verbose=0)
-    
-    # XGBoost prediction
-    xgb_input = np.hstack((seq_array[:, -1, :], lstm_pred))
-    pred_price = xgb_model.predict(xgb_input)[0]
+    lgb_input = np.hstack((seq_array[:, -1, :], lstm_pred))
+    pred_price = lgb_model.predict(lgb_input)[0]
+    pred_price = max(pred_price, -150)  # Cap negative prices based on observed range
+    past_prices.append(pred_price)
     predictions.append(pred_price)
-    
-    # Update sequence with prediction
-    new_row = seq_df.iloc[-1].copy()
-    new_row['Price_Denoised'] = pred_price  # Update denoised price
-    new_row['Lag_Price_1h'] = seq_df['Price_Denoised'].iloc[-1]
-    new_row['Lag_Price_6h'] = seq_df['Price_Denoised'].iloc[-6] if len(seq_df) >= 6 else new_row['Lag_Price_1h']
-    new_row['Lag_Price_24h'] = seq_df['Price_Denoised'].iloc[-24] if len(seq_df) >= 24 else new_row['Lag_Price_1h']
-    new_row['Rolling_Price_6h'] = seq_df['Price_Denoised'].tail(6).mean() if len(seq_df) >= 6 else pred_price
-    new_row['Rolling_Price_24h'] = seq_df['Price_Denoised'].tail(24).mean() if len(seq_df) >= 24 else pred_price
-    new_row['Price_Volatility_24h'] = seq_df['Price_Denoised'].tail(24).std() if len(seq_df) >= 24 else 0
-    
-    # Update exogenous features from future_df
-    for col in ['total-consumption', 'temperature_2m', 'wind_speed_100m (km/h)', 'relative_humidity_2m (%)', 'Hour', 'Day', 'Month', 'DayOfWeek']:
-        if col in future_df.columns:
-            new_row[col] = future_df.iloc[i][col]
-    
-    # Append and shift sequence
-    current_seq = np.vstack((current_seq[1:], scaler.transform(pd.DataFrame([new_row], columns=valid_features))))
 
 future_df['Predicted Price [Euro/MWh]'] = predictions
 
-# -------------------------------
-# Evaluation and Plotting
-# -------------------------------
-
+# Actual Data for Evaluation
 actual_data = [
     {"start date/time": "2025-01-06 00:00:00", "actual_price": 27.52},
     {"start date/time": "2025-01-06 01:00:00", "actual_price": 19.26},
@@ -376,12 +371,14 @@ actual_data = [
     {"start date/time": "2025-01-11 23:00:00", "actual_price": 105.69},
     {"start date/time": "2025-01-12 00:00:00", "actual_price": 83.58},
 ]
+
 actual_df = pd.DataFrame(actual_data)
 actual_df['start date/time'] = pd.to_datetime(actual_df['start date/time'])
 
 merged_df = pd.merge(future_df[['StartDateTime', 'Predicted Price [Euro/MWh]']],
                     actual_df, left_on='StartDateTime', right_on='start date/time', how='inner')
 
+# Plotting
 plt.figure(figsize=(14, 7))
 plt.plot(future_df['StartDateTime'], future_df['Predicted Price [Euro/MWh]'], label='Predicted Price', color='blue', marker='o')
 plt.plot(merged_df['StartDateTime'], merged_df['actual_price'], label='Actual Price', color='red', marker='x')
@@ -393,6 +390,7 @@ plt.xticks(rotation=45)
 plt.tight_layout()
 plt.show()
 
+# Future Prediction Metrics
 if not merged_df.empty:
     y_true = merged_df['actual_price'].values
     y_pred = merged_df['Predicted Price [Euro/MWh]'].values

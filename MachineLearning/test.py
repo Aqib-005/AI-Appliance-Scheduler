@@ -92,7 +92,7 @@ hist_data['Hour_cos'] = np.cos(2 * np.pi * hist_data['Hour'] / 24)
 hist_data['DayOfWeek_sin'] = np.sin(2 * np.pi * hist_data['DayOfWeek'] / 7)
 hist_data['DayOfWeek_cos'] = np.cos(2 * np.pi * hist_data['DayOfWeek'] / 7)
 
-# Feature Engineering: Lag features and Rolling statistics
+# ---------- Feature Engineering ----------
 hist_data['Lag_Price_1h'] = hist_data['Price'].shift(1)
 hist_data['Lag_Price_6h'] = hist_data['Price'].shift(6)
 hist_data['Lag_Price_24h'] = hist_data['Price'].shift(24)
@@ -106,7 +106,6 @@ hist_data['Rolling_Load_24h'] = hist_data['total-consumption'].rolling(window=24
 hist_data['Price_StdDev_6h'] = hist_data['Price'].rolling(window=6, min_periods=1).std()
 hist_data['Price_StdDev_24h'] = hist_data['Price'].rolling(window=24, min_periods=1).std()
 
-# Handle missing values with interpolation and fillna with mean
 for col in hist_data.columns:
     if hist_data[col].dtype in [np.float64, np.int64]:
         hist_data[col] = hist_data[col].interpolate(method='linear', limit_direction='both')
@@ -160,7 +159,6 @@ def objective(trial):
         'reg_alpha': trial.suggest_float('reg_alpha', 0, 20),
         'reg_lambda': trial.suggest_float('reg_lambda', 0, 20),
         'random_state': 42,
-        # Use a robust objective that is less sensitive to outliers:
         'objective': 'reg:pseudohubererror',
         'eval_metric': 'rmse',
         'early_stopping_rounds': 50
@@ -180,7 +178,7 @@ study.optimize(objective, n_trials=100)
 best_params = study.best_params
 print(f"Best Parameters: {best_params}")
 
-# ---------- Train Final XGBoost Model ----------
+# ---------- Train Final XGBoost Model (Single Model) ----------
 best_xgb = xgb.XGBRegressor(**best_params, random_state=42)
 best_xgb.fit(X_scaled, y)
 
@@ -228,8 +226,8 @@ future_df['DayOfWeek'] = future_df['DayOfWeek'].str.title().map(day_map)
 future_df.dropna(subset=['StartDateTime', 'DayOfWeek'], inplace=True)
 future_df.sort_values('StartDateTime', inplace=True)
 
-forecast_start_dt = pd.to_datetime('06/01/2025 00:00:00', format='%d/%m/%Y %H:%M:%S')
-forecast_end_dt = pd.to_datetime('12/01/2025 23:00:00', format='%d/%m/%Y %H:%M:%S')
+forecast_start_dt = pd.to_datetime('02/01/2025 00:00:00', format='%d/%m/%Y %H:%M:%S')
+forecast_end_dt = pd.to_datetime('08/01/2025 23:00:00', format='%d/%m/%Y %H:%M:%S')
 future_df = future_df[(future_df['StartDateTime'] >= forecast_start_dt) & 
                       (future_df['StartDateTime'] <= forecast_end_dt)].copy()
 
@@ -250,7 +248,7 @@ future_df['Hour_cos'] = np.cos(2 * np.pi * future_df['Hour'] / 24)
 future_df['DayOfWeek_sin'] = np.sin(2 * np.pi * future_df['DayOfWeek'] / 7)
 future_df['DayOfWeek_cos'] = np.cos(2 * np.pi * future_df['DayOfWeek'] / 7)
 
-# Recursive prediction with historical context
+# ---------- Recursive Prediction (Single Model) ----------
 last_historical_data = hist_data.tail(48)
 predictions = []
 
@@ -348,9 +346,118 @@ for idx, row in future_df.iterrows():
     pred_price = best_xgb.predict(feature_vector_scaled)[0]
     predictions.append(pred_price)
 
-future_df['Predicted Price [Euro/MWh]'] = predictions
+# ---------- Post-Processing: Apply Exponential Moving Average (EMA) Smoothing ----------
+def ema_smoothing(series, alpha=0.2):
+    smoothed = [series[0]]
+    for x in series[1:]:
+        smoothed.append(alpha * x + (1 - alpha) * smoothed[-1])
+    return np.array(smoothed)
+
+predictions_smoothed = ema_smoothing(predictions, alpha=0.2)
+
+future_df['Predicted Price [Euro/MWh]'] = predictions_smoothed
 
 actual_data = [
+    {"start date/time": "2025-01-02 00:00:00", "actual_price": 2.55},
+    {"start date/time": "2025-01-02 01:00:00", "actual_price": 1.56},
+    {"start date/time": "2025-01-02 02:00:00", "actual_price": 3.45},
+    {"start date/time": "2025-01-02 03:00:00", "actual_price": 7.02},
+    {"start date/time": "2025-01-02 04:00:00", "actual_price": 12.75},
+    {"start date/time": "2025-01-02 05:00:00", "actual_price": 30.07},
+    {"start date/time": "2025-01-02 06:00:00", "actual_price": 67.13},
+    {"start date/time": "2025-01-02 07:00:00", "actual_price": 98.83},
+    {"start date/time": "2025-01-02 08:00:00", "actual_price": 121.53},
+    {"start date/time": "2025-01-02 09:00:00", "actual_price": 127.23},
+    {"start date/time": "2025-01-02 10:00:00", "actual_price": 126.35},
+    {"start date/time": "2025-01-02 11:00:00", "actual_price": 119.97},
+    {"start date/time": "2025-01-02 12:00:00", "actual_price": 115.95},
+    {"start date/time": "2025-01-02 13:00:00", "actual_price": 113.90},
+    {"start date/time": "2025-01-02 14:00:00", "actual_price": 122.21},
+    {"start date/time": "2025-01-02 15:00:00", "actual_price": 130.11},
+    {"start date/time": "2025-01-02 16:00:00", "actual_price": 138.59},
+    {"start date/time": "2025-01-02 17:00:00", "actual_price": 152.87},
+    {"start date/time": "2025-01-02 18:00:00", "actual_price": 152.94},
+    {"start date/time": "2025-01-02 19:00:00", "actual_price": 139.15},
+    {"start date/time": "2025-01-02 20:00:00", "actual_price": 130.00},
+    {"start date/time": "2025-01-02 21:00:00", "actual_price": 119.78},
+    {"start date/time": "2025-01-02 22:00:00", "actual_price": 113.42},
+    {"start date/time": "2025-01-02 23:00:00", "actual_price": 82.47},
+    # January 3rd
+    {"start date/time": "2025-01-03 00:00:00", "actual_price": 99.56},
+    {"start date/time": "2025-01-03 01:00:00", "actual_price": 87.53},
+    {"start date/time": "2025-01-03 02:00:00", "actual_price": 85.01},
+    {"start date/time": "2025-01-03 03:00:00", "actual_price": 83.79},
+    {"start date/time": "2025-01-03 04:00:00", "actual_price": 77.50},
+    {"start date/time": "2025-01-03 05:00:00", "actual_price": 79.88},
+    {"start date/time": "2025-01-03 06:00:00", "actual_price": 83.56},
+    {"start date/time": "2025-01-03 07:00:00", "actual_price": 78.43},
+    {"start date/time": "2025-01-03 08:00:00", "actual_price": 82.57},
+    {"start date/time": "2025-01-03 09:00:00", "actual_price": 80.76},
+    {"start date/time": "2025-01-03 10:00:00", "actual_price": 77.64},
+    {"start date/time": "2025-01-03 11:00:00", "actual_price": 70.48},
+    {"start date/time": "2025-01-03 12:00:00", "actual_price": 69.94},
+    {"start date/time": "2025-01-03 13:00:00", "actual_price": 77.80},
+    {"start date/time": "2025-01-03 14:00:00", "actual_price": 78.81},
+    {"start date/time": "2025-01-03 15:00:00", "actual_price": 85.29},
+    {"start date/time": "2025-01-03 16:00:00", "actual_price": 105.51},
+    {"start date/time": "2025-01-03 17:00:00", "actual_price": 116.66},
+    {"start date/time": "2025-01-03 18:00:00", "actual_price": 115.06},
+    {"start date/time": "2025-01-03 19:00:00", "actual_price": 114.91},
+    {"start date/time": "2025-01-03 20:00:00", "actual_price": 113.30},
+    {"start date/time": "2025-01-03 21:00:00", "actual_price": 107.80},
+    {"start date/time": "2025-01-03 22:00:00", "actual_price": 98.22},
+    {"start date/time": "2025-01-03 23:00:00", "actual_price": 88.57},
+    # January 4th
+    {"start date/time": "2025-01-04 00:00:00", "actual_price": 90.43},
+    {"start date/time": "2025-01-04 01:00:00", "actual_price": 90.29},
+    {"start date/time": "2025-01-04 02:00:00", "actual_price": 90.20},
+    {"start date/time": "2025-01-04 03:00:00", "actual_price": 91.52},
+    {"start date/time": "2025-01-04 04:00:00", "actual_price": 95.95},
+    {"start date/time": "2025-01-04 05:00:00", "actual_price": 102.11},
+    {"start date/time": "2025-01-04 06:00:00", "actual_price": 110.66},
+    {"start date/time": "2025-01-04 07:00:00", "actual_price": 119.96},
+    {"start date/time": "2025-01-04 08:00:00", "actual_price": 128.39},
+    {"start date/time": "2025-01-04 09:00:00", "actual_price": 130.75},
+    {"start date/time": "2025-01-04 10:00:00", "actual_price": 130.34},
+    {"start date/time": "2025-01-04 11:00:00", "actual_price": 128.29},
+    {"start date/time": "2025-01-04 12:00:00", "actual_price": 130.03},
+    {"start date/time": "2025-01-04 13:00:00", "actual_price": 129.85},
+    {"start date/time": "2025-01-04 14:00:00", "actual_price": 136.40},
+    {"start date/time": "2025-01-04 15:00:00", "actual_price": 138.72},
+    {"start date/time": "2025-01-04 16:00:00", "actual_price": 142.00},
+    {"start date/time": "2025-01-04 17:00:00", "actual_price": 151.24},
+    {"start date/time": "2025-01-04 18:00:00", "actual_price": 143.85},
+    {"start date/time": "2025-01-04 19:00:00", "actual_price": 137.96},
+    {"start date/time": "2025-01-04 20:00:00", "actual_price": 129.49},
+    {"start date/time": "2025-01-04 21:00:00", "actual_price": 122.83},
+    {"start date/time": "2025-01-04 22:00:00", "actual_price": 118.29},
+    {"start date/time": "2025-01-04 23:00:00", "actual_price": 109.49},
+    # January 5th
+    {"start date/time": "2025-01-05 00:00:00", "actual_price": 113.84},
+    {"start date/time": "2025-01-05 01:00:00", "actual_price": 100.33},
+    {"start date/time": "2025-01-05 02:00:00", "actual_price": 93.61},
+    {"start date/time": "2025-01-05 03:00:00", "actual_price": 93.87},
+    {"start date/time": "2025-01-05 04:00:00", "actual_price": 89.38},
+    {"start date/time": "2025-01-05 05:00:00", "actual_price": 83.55},
+    {"start date/time": "2025-01-05 06:00:00", "actual_price": 83.92},
+    {"start date/time": "2025-01-05 07:00:00", "actual_price": 82.53},
+    {"start date/time": "2025-01-05 08:00:00", "actual_price": 84.05},
+    {"start date/time": "2025-01-05 09:00:00", "actual_price": 89.15},
+    {"start date/time": "2025-01-05 10:00:00", "actual_price": 82.95},
+    {"start date/time": "2025-01-05 11:00:00", "actual_price": 88.82},
+    {"start date/time": "2025-01-05 12:00:00", "actual_price": 81.66},
+    {"start date/time": "2025-01-05 13:00:00", "actual_price": 78.39},
+    {"start date/time": "2025-01-05 14:00:00", "actual_price": 68.00},
+    {"start date/time": "2025-01-05 15:00:00", "actual_price": 50.64},
+    {"start date/time": "2025-01-05 16:00:00", "actual_price": 49.91},
+    {"start date/time": "2025-01-05 17:00:00", "actual_price": 66.30},
+    {"start date/time": "2025-01-05 18:00:00", "actual_price": 65.05},
+    {"start date/time": "2025-01-05 19:00:00", "actual_price": 51.28},
+    {"start date/time": "2025-01-05 20:00:00", "actual_price": 36.85},
+    {"start date/time": "2025-01-05 21:00:00", "actual_price": 36.80},
+    {"start date/time": "2025-01-05 22:00:00", "actual_price": 34.68},
+    {"start date/time": "2025-01-05 23:00:00", "actual_price": 28.14},
+    # January 6th
     {"start date/time": "2025-01-06 00:00:00", "actual_price": 27.52},
     {"start date/time": "2025-01-06 01:00:00", "actual_price": 19.26},
     {"start date/time": "2025-01-06 02:00:00", "actual_price": 11.35},
@@ -375,6 +482,7 @@ actual_data = [
     {"start date/time": "2025-01-06 21:00:00", "actual_price": 13.82},
     {"start date/time": "2025-01-06 22:00:00", "actual_price": 26.94},
     {"start date/time": "2025-01-06 23:00:00", "actual_price": 12.99},
+    # January 7th
     {"start date/time": "2025-01-07 00:00:00", "actual_price": 19.07},
     {"start date/time": "2025-01-07 01:00:00", "actual_price": 8.71},
     {"start date/time": "2025-01-07 02:00:00", "actual_price": 8.90},
@@ -399,6 +507,7 @@ actual_data = [
     {"start date/time": "2025-01-07 21:00:00", "actual_price": 72.45},
     {"start date/time": "2025-01-07 22:00:00", "actual_price": 72.45},
     {"start date/time": "2025-01-07 23:00:00", "actual_price": 50.04},
+    # January 8th
     {"start date/time": "2025-01-08 00:00:00", "actual_price": 71.05},
     {"start date/time": "2025-01-08 01:00:00", "actual_price": 68.01},
     {"start date/time": "2025-01-08 02:00:00", "actual_price": 63.34},
@@ -423,79 +532,6 @@ actual_data = [
     {"start date/time": "2025-01-08 21:00:00", "actual_price": 127.86},
     {"start date/time": "2025-01-08 22:00:00", "actual_price": 115.92},
     {"start date/time": "2025-01-08 23:00:00", "actual_price": 103.59},
-    {"start date/time": "2025-01-09 00:00:00", "actual_price": 101.44},
-    {"start date/time": "2025-01-09 01:00:00", "actual_price": 100.00},
-    {"start date/time": "2025-01-09 02:00:00", "actual_price": 98.77},
-    {"start date/time": "2025-01-09 03:00:00", "actual_price": 95.22},
-    {"start date/time": "2025-01-09 04:00:00", "actual_price": 98.28},
-    {"start date/time": "2025-01-09 05:00:00", "actual_price": 102.65},
-    {"start date/time": "2025-01-09 06:00:00", "actual_price": 133.54},
-    {"start date/time": "2025-01-09 07:00:00", "actual_price": 148.80},
-    {"start date/time": "2025-01-09 08:00:00", "actual_price": 164.88},
-    {"start date/time": "2025-01-09 09:00:00", "actual_price": 156.15},
-    {"start date/time": "2025-01-09 10:00:00", "actual_price": 147.64},
-    {"start date/time": "2025-01-09 11:00:00", "actual_price": 140.21},
-    {"start date/time": "2025-01-09 12:00:00", "actual_price": 128.18},
-    {"start date/time": "2025-01-09 13:00:00", "actual_price": 121.15},
-    {"start date/time": "2025-01-09 14:00:00", "actual_price": 123.95},
-    {"start date/time": "2025-01-09 15:00:00", "actual_price": 127.53},
-    {"start date/time": "2025-01-09 16:00:00", "actual_price": 123.75},
-    {"start date/time": "2025-01-09 17:00:00", "actual_price": 130.91},
-    {"start date/time": "2025-01-09 18:00:00", "actual_price": 134.75},
-    {"start date/time": "2025-01-09 19:00:00", "actual_price": 125.44},
-    {"start date/time": "2025-01-09 20:00:00", "actual_price": 119.23},
-    {"start date/time": "2025-01-09 21:00:00", "actual_price": 104.99},
-    {"start date/time": "2025-01-09 22:00:00", "actual_price": 101.10},
-    {"start date/time": "2025-01-09 23:00:00", "actual_price": 88.19},
-    {"start date/time": "2025-01-10 00:00:00", "actual_price": 84.79},
-    {"start date/time": "2025-01-10 01:00:00", "actual_price": 80.23},
-    {"start date/time": "2025-01-10 02:00:00", "actual_price": 71.29},
-    {"start date/time": "2025-01-10 03:00:00", "actual_price": 69.05},
-    {"start date/time": "2025-01-10 04:00:00", "actual_price": 69.89},
-    {"start date/time": "2025-01-10 05:00:00", "actual_price": 83.90},
-    {"start date/time": "2025-01-10 06:00:00", "actual_price": 99.09},
-    {"start date/time": "2025-01-10 07:00:00", "actual_price": 123.92},
-    {"start date/time": "2025-01-10 08:00:00", "actual_price": 139.47},
-    {"start date/time": "2025-01-10 09:00:00", "actual_price": 136.92},
-    {"start date/time": "2025-01-10 10:00:00", "actual_price": 123.57},
-    {"start date/time": "2025-01-10 11:00:00", "actual_price": 113.59},
-    {"start date/time": "2025-01-10 12:00:00", "actual_price": 107.43},
-    {"start date/time": "2025-01-10 13:00:00", "actual_price": 105.01},
-    {"start date/time": "2025-01-10 14:00:00", "actual_price": 110.01},
-    {"start date/time": "2025-01-10 15:00:00", "actual_price": 128.69},
-    {"start date/time": "2025-01-10 16:00:00", "actual_price": 134.87},
-    {"start date/time": "2025-01-10 17:00:00", "actual_price": 142.56},
-    {"start date/time": "2025-01-10 18:00:00", "actual_price": 144.12},
-    {"start date/time": "2025-01-10 19:00:00", "actual_price": 141.05},
-    {"start date/time": "2025-01-10 20:00:00", "actual_price": 134.82},
-    {"start date/time": "2025-01-10 21:00:00", "actual_price": 122.51},
-    {"start date/time": "2025-01-10 22:00:00", "actual_price": 119.77},
-    {"start date/time": "2025-01-10 23:00:00", "actual_price": 111.71},
-    {"start date/time": "2025-01-11 00:00:00", "actual_price": 106.64},
-    {"start date/time": "2025-01-11 01:00:00", "actual_price": 98.99},
-    {"start date/time": "2025-01-11 02:00:00", "actual_price": 95.71},
-    {"start date/time": "2025-01-11 03:00:00", "actual_price": 89.45},
-    {"start date/time": "2025-01-11 04:00:00", "actual_price": 88.35},
-    {"start date/time": "2025-01-11 05:00:00", "actual_price": 88.40},
-    {"start date/time": "2025-01-11 06:00:00", "actual_price": 88.13},
-    {"start date/time": "2025-01-11 07:00:00", "actual_price": 94.68},
-    {"start date/time": "2025-01-11 08:00:00", "actual_price": 107.65},
-    {"start date/time": "2025-01-11 09:00:00", "actual_price": 103.14},
-    {"start date/time": "2025-01-11 10:00:00", "actual_price": 101.13},
-    {"start date/time": "2025-01-11 11:00:00", "actual_price": 99.56},
-    {"start date/time": "2025-01-11 12:00:00", "actual_price": 96.74},
-    {"start date/time": "2025-01-11 13:00:00", "actual_price": 93.15},
-    {"start date/time": "2025-01-11 14:00:00", "actual_price": 94.90},
-    {"start date/time": "2025-01-11 15:00:00", "actual_price": 104.89},
-    {"start date/time": "2025-01-11 16:00:00", "actual_price": 112.12},
-    {"start date/time": "2025-01-11 17:00:00", "actual_price": 119.80},
-    {"start date/time": "2025-01-11 18:00:00", "actual_price": 122.34},
-    {"start date/time": "2025-01-11 19:00:00", "actual_price": 114.85},
-    {"start date/time": "2025-01-11 20:00:00", "actual_price": 111.19},
-    {"start date/time": "2025-01-11 21:00:00", "actual_price": 104.80},
-    {"start date/time": "2025-01-11 22:00:00", "actual_price": 103.07},
-    {"start date/time": "2025-01-11 23:00:00", "actual_price": 105.69},
-    {"start date/time": "2025-01-12 00:00:00", "actual_price": 83.58},
 ]
 
 actual_df = pd.DataFrame(actual_data)
@@ -510,8 +546,10 @@ merged_df = pd.merge(
 )
 
 plt.figure(figsize=(14, 7))
-plt.plot(merged_df['StartDateTime'], merged_df['Predicted Price [Euro/MWh]'], label='Predicted Price', color='blue', marker='o')
-plt.plot(merged_df['StartDateTime'], merged_df['actual_price'], label='Actual Price', color='red', marker='x')
+plt.plot(merged_df['StartDateTime'], merged_df['Predicted Price [Euro/MWh]'], 
+         label='Predicted Price', color='blue', marker='o')
+plt.plot(merged_df['StartDateTime'], merged_df['actual_price'], 
+         label='Actual Price', color='red', marker='x')
 plt.xlabel('Date and Time')
 plt.ylabel('Price [Euro/MWh]')
 plt.title('Predicted vs Actual Electricity Prices (06-Jan-2025 to 12-Jan-2025)')
