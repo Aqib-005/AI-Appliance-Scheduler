@@ -1,42 +1,28 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import RobustScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.linear_model import LinearRegression
 import lightgbm as lgb
 import matplotlib.pyplot as plt
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, LSTM, Dense, Dropout, Bidirectional, Layer
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
 import tensorflow as tf
+from xgboost import XGBRegressor
 
-# Custom Attention Layer
-class Attention(Layer):
-    def __init__(self, **kwargs):
-        super(Attention, self).__init__(**kwargs)
-
-    def build(self, input_shape):
-        self.W = self.add_weight(name="att_weight", shape=(input_shape[-1], 1), initializer="normal")
-        self.b = self.add_weight(name="att_bias", shape=(input_shape[1], 1), initializer="zeros")
-        super(Attention, self).build(input_shape)
-
-    def call(self, x):
-        e = tf.keras.backend.tanh(tf.keras.backend.dot(x, self.W) + self.b)
-        a = tf.keras.backend.softmax(e, axis=1)
-        output = x * a
-        return tf.keras.backend.sum(output, axis=1)
-
-# Utility Functions
+# Define helper functions
 def clean_numeric_column(series):
+    """Convert a series to numeric, handling commas, spaces, and dashes."""
     return pd.to_numeric(
         series.astype(str).str.replace(',', '.').str.replace(' ', '').str.replace('–', '-'),
         errors='coerce'
     )
 
 def safe_mape(actual, predicted):
-    """Calculate MAPE, avoiding division by zero and handling negative values."""
-    mask = np.abs(actual) > 1e-8  # Avoid division by very small numbers
-    actual_safe = np.where(mask, actual, 1e-8)
-    return np.mean(np.abs((actual_safe - predicted) / actual_safe)) * 100
+    """Calculate MAPE, avoiding division by zero and handling small values."""
+    mask = np.abs(actual) > 1e-8  # Avoid division by very small values
+    return np.mean(np.abs((actual[mask] - predicted[mask]) / actual[mask])) * 100
 
 # Load and Preprocess Historical Data
 hist_data = pd.read_csv("data/merged-data.csv")
@@ -48,6 +34,7 @@ hist_data.rename(columns={
     'day of the week': 'DayOfWeek'
 }, inplace=True)
 
+# Convert numeric columns
 numeric_cols = [
     'Price', 'total-consumption', 'temperature_2m', 'precipitation (mm)', 'rain (mm)',
     'snowfall (cm)', 'wind_speed_100m (km/h)', 'relative_humidity_2m (%)', 'weather_code (wmo code)'
@@ -56,14 +43,16 @@ for col in numeric_cols:
     if col in hist_data.columns:
         hist_data[col] = clean_numeric_column(hist_data[col])
 
+# Convert datetime and sort
 hist_data['StartDateTime'] = pd.to_datetime(hist_data['StartDateTime'], format='%d/%m/%Y %H:%M', errors='coerce')
 hist_data = hist_data.sort_values('StartDateTime').dropna(subset=['StartDateTime']).reset_index(drop=True)
 
+# Map day of week
 day_map = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 'Friday': 4, 'Saturday': 5, 'Sunday': 6}
 hist_data['DayOfWeek'] = hist_data['DayOfWeek'].str.title().map(day_map)
 hist_data = hist_data.dropna(subset=['DayOfWeek'])
 
-# Enhanced Feature Engineering
+# Feature Engineering
 hist_data['Hour'] = hist_data['StartDateTime'].dt.hour
 hist_data['Day'] = hist_data['StartDateTime'].dt.day
 hist_data['Month'] = hist_data['StartDateTime'].dt.month
@@ -78,8 +67,11 @@ hist_data['Hourly_Volatility'] = hist_data['Price'].rolling(window=24, min_perio
 # Handle missing values and outliers
 for col in hist_data.columns:
     if hist_data[col].dtype in [np.float64, np.int64]:
-        hist_data[col] = hist_data[col].clip(lower=hist_data[col].quantile(0.01), upper=hist_data[col].quantile(0.99))
-        hist_data[col] = hist_data[col].interpolate(method='linear', limit_direction='both').fillna(hist_data[col].mean())
+        hist_data[col] = hist_data[col].fillna(method='ffill').fillna(method='bfill')
+        Q1 = hist_data[col].quantile(0.25)
+        Q3 = hist_data[col].quantile(0.75)
+        IQR = Q3 - Q1
+        hist_data[col] = hist_data[col].clip(lower=Q1 - 1.5 * IQR, upper=Q3 + 1.5 * IQR)
 
 # Define features and target
 features = [
@@ -88,10 +80,10 @@ features = [
     'Hourly_Volatility', 'Hour', 'Day', 'Month', 'DayOfWeek', 'IsWeekend'
 ]
 target = 'Price'
-
 valid_features = [col for col in features if col in hist_data.columns and not hist_data[col].isna().all()]
 print("Valid features:", valid_features)
 
+# Prepare data
 hist_data = hist_data.dropna(subset=valid_features + [target])
 X = hist_data[valid_features]
 y = hist_data[target]
@@ -101,65 +93,36 @@ scaler = RobustScaler()
 X_scaled = scaler.fit_transform(X)
 X_scaled_df = pd.DataFrame(X_scaled, columns=valid_features)
 
-# Create sequences for LSTM
-def create_sequences(X, y, time_steps=24):
-    Xs, ys = [], []
-    for i in range(len(X) - time_steps):
-        Xs.append(X.iloc[i:(i + time_steps)].values)
-        ys.append(y.iloc[i + time_steps])
-    return np.array(Xs), np.array(ys)
+# Split data
+X_train, X_val, y_train, y_val = train_test_split(X_scaled_df, y, test_size=0.2, shuffle=False)
 
-time_steps = 24
-X_seq, y_seq = create_sequences(X_scaled_df, y, time_steps)
-split = int(0.8 * len(X_seq))
-X_train_seq, X_val_seq = X_seq[:split], X_seq[split:]
-y_train_seq, y_val_seq = y_seq[:split], y_seq[split:]
-
-# Attention-based LSTM model
-def create_attention_lstm_model(input_shape):
-    inputs = Input(shape=input_shape)
-    lstm_out = Bidirectional(LSTM(64, return_sequences=True, dropout=0.2))(inputs)
-    attention_out = Attention()(lstm_out)
-    dense_out = Dense(32, activation='relu')(attention_out)
-    outputs = Dense(1)(dense_out)
-    model = Model(inputs, outputs)
-    model.compile(optimizer='adam', loss='mse')
-    return model
-
-lstm_model = create_attention_lstm_model((time_steps, X_train_seq.shape[2]))
-early_stopping = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
-lstm_model.fit(X_train_seq, y_train_seq, epochs=100, batch_size=32, validation_data=(X_val_seq, y_val_seq),
-               callbacks=[early_stopping], verbose=1)
-
-# Extract LSTM features
-lstm_features_train = lstm_model.predict(X_train_seq)
-lstm_features_val = lstm_model.predict(X_val_seq)
-
-# Combine with original features for LightGBM
-X_train_lgb = np.hstack((X_train_seq[:, -1, :], lstm_features_train))
-X_val_lgb = np.hstack((X_val_seq[:, -1, :], lstm_features_val))
-
-# Train LightGBM model
-lgb_params = {
-    'objective': 'regression',
-    'n_estimators': 500,
-    'learning_rate': 0.05,
-    'max_depth': 6,
-    'num_leaves': 31,
-    'min_child_samples': 20,
-    'subsample': 0.8,
-    'colsample_bytree': 0.8
+# Train LightGBM with hyperparameter tuning
+param_grid = {
+    'num_leaves': [31, 50, 100],
+    'min_data_in_leaf': [10, 20, 50],
+    'max_depth': [-1, 10, 20],
+    'learning_rate': [0.01, 0.05, 0.1],
+    'reg_alpha': [0, 0.1, 1],
+    'reg_lambda': [0, 0.1, 1]
 }
-lgb_model = lgb.LGBMRegressor(**lgb_params)
-lgb_model.fit(X_train_lgb, y_train_seq)
+lgbm = lgb.LGBMRegressor()
+grid_search = GridSearchCV(lgbm, param_grid, cv=5, scoring='neg_mean_squared_error', n_jobs=-1)
+grid_search.fit(X_train, y_train)
+best_model = grid_search.best_estimator_
+print("Best parameters:", grid_search.best_params_)
 
-# Validation evaluation
-y_pred_val = lgb_model.predict(X_val_lgb)
-print("\n=== Historical Evaluation ===")
-print(f"RMSE: {np.sqrt(mean_squared_error(y_val_seq, y_pred_val)):.2f}")
-print(f"MAE: {mean_absolute_error(y_val_seq, y_pred_val):.2f}")
-print(f"R²: {r2_score(y_val_seq, y_pred_val):.3f}")
-print(f"MAPE: {safe_mape(y_val_seq, y_pred_val):.2f}%")
+# Validation prediction and calibration
+y_pred_val = best_model.predict(X_val)
+calibration_model = LinearRegression()
+calibration_model.fit(y_pred_val.reshape(-1, 1), y_val)
+calibrated_y_pred_val = calibration_model.predict(y_pred_val.reshape(-1, 1))
+
+# Validation metrics
+print("\n=== Calibrated Historical Evaluation (LightGBM) ===")
+print(f"RMSE: {np.sqrt(mean_squared_error(y_val, calibrated_y_pred_val)):.2f}")
+print(f"MAE: {mean_absolute_error(y_val, calibrated_y_pred_val):.2f}")
+print(f"R²: {r2_score(y_val, calibrated_y_pred_val):.3f}")
+print(f"MAPE: {safe_mape(y_val, calibrated_y_pred_val):.2f}%")
 
 # Load and Preprocess Future Data
 future_df = pd.read_csv('data/future-data.csv')
@@ -169,29 +132,35 @@ future_df.rename(columns={
     'grid_load': 'total-consumption',
     'day of the week': 'DayOfWeek'
 }, inplace=True)
+
 for col in numeric_cols:
     if col in future_df.columns and col != 'Price':
         future_df[col] = clean_numeric_column(future_df[col])
+
 future_df['StartDateTime'] = pd.to_datetime(future_df['StartDateTime'], format='%d/%m/%Y %H:%M', errors='coerce')
 future_df['DayOfWeek'] = future_df['DayOfWeek'].str.title().map(day_map)
 future_df = future_df.dropna(subset=['StartDateTime', 'DayOfWeek']).sort_values('StartDateTime').reset_index(drop=True)
 
+# Filter future data
 forecast_start_dt = pd.to_datetime('06/01/2025 00:00:00', format='%d/%m/%Y %H:%M:%S')
-forecast_end_dt = pd.to_datetime('12/01/2025 23:00:00', format='%d/%m/%Y %H:%M:%S')
+forecast_end_dt = pd.to_datetime('12/01/2025 00:00:00', format='%d/%m/%Y %H:%M:%S')
 future_df = future_df[(future_df['StartDateTime'] >= forecast_start_dt) & (future_df['StartDateTime'] <= forecast_end_dt)]
 
-# Time features for future data
+# Add time features
 future_df['Hour'] = future_df['StartDateTime'].dt.hour
 future_df['Day'] = future_df['StartDateTime'].dt.day
 future_df['Month'] = future_df['StartDateTime'].dt.month
 future_df['IsWeekend'] = future_df['DayOfWeek'].apply(lambda x: 1 if x >= 5 else 0)
 
-# Initialize past prices and sequence
-past_prices = list(hist_data['Price'].tail(time_steps).values)
-current_seq = X_scaled_df.tail(time_steps).values.copy()
+# Warm-up period for better first-day predictions
+time_steps = 24
+warm_up_X = X_scaled_df.iloc[-time_steps:]
+warm_up_predictions = best_model.predict(warm_up_X)
+calibrated_warm_up_predictions = calibration_model.predict(warm_up_predictions.reshape(-1, 1))
+past_prices = list(calibrated_warm_up_predictions)
 
+# Prediction loop
 predictions = []
-
 for i in range(len(future_df)):
     new_row = pd.Series(index=valid_features, dtype=float)
     for feature in ['total-consumption', 'temperature_2m', 'wind_speed_100m (km/h)', 'relative_humidity_2m (%)', 'Hour', 'Day', 'Month', 'DayOfWeek', 'IsWeekend']:
@@ -212,18 +181,15 @@ for i in range(len(future_df)):
 
     new_row = new_row.fillna(0)
     new_row_scaled = scaler.transform(new_row.to_frame().T)
-    current_seq = np.vstack((current_seq[1:], new_row_scaled))
-    seq_array = current_seq.reshape(1, time_steps, len(valid_features))
-    lstm_pred = lstm_model.predict(seq_array, verbose=0)
-    lgb_input = np.hstack((seq_array[:, -1, :], lstm_pred))
-    pred_price = lgb_model.predict(lgb_input)[0]
-    pred_price = max(pred_price, -150)  # Cap negative prices based on observed range
-    past_prices.append(pred_price)
-    predictions.append(pred_price)
+    pred_price = best_model.predict(new_row_scaled)[0]
+    calibrated_pred_price = calibration_model.predict([[pred_price]])[0]
+    calibrated_pred_price = np.clip(calibrated_pred_price, -150, 200)
+    past_prices.append(calibrated_pred_price)
+    predictions.append(calibrated_pred_price)
 
 future_df['Predicted Price [Euro/MWh]'] = predictions
 
-# Actual Data for Evaluation
+# Actual Data (Replace with your full dataset)
 actual_data = [
     {"start date/time": "2025-01-06 00:00:00", "actual_price": 27.52},
     {"start date/time": "2025-01-06 01:00:00", "actual_price": 19.26},
@@ -375,13 +341,23 @@ actual_data = [
 actual_df = pd.DataFrame(actual_data)
 actual_df['start date/time'] = pd.to_datetime(actual_df['start date/time'])
 
-merged_df = pd.merge(future_df[['StartDateTime', 'Predicted Price [Euro/MWh]']],
-                    actual_df, left_on='StartDateTime', right_on='start date/time', how='inner')
+# Check actual data coverage
+print("Actual data range:", actual_df['start date/time'].min(), "to", actual_df['start date/time'].max())
+if actual_df['start date/time'].max() < forecast_end_dt:
+    print("Warning: Actual data incomplete. Update 'actual_data' to cover up to", forecast_end_dt)
+
+# Merge data (use 'left' to include all predictions)
+merged_df = pd.merge(
+    future_df[['StartDateTime', 'Predicted Price [Euro/MWh]']],
+    actual_df.rename(columns={'start date/time': 'StartDateTime', 'actual_price': 'Actual Price'}),
+    on='StartDateTime',
+    how='left'
+)
 
 # Plotting
 plt.figure(figsize=(14, 7))
-plt.plot(future_df['StartDateTime'], future_df['Predicted Price [Euro/MWh]'], label='Predicted Price', color='blue', marker='o')
-plt.plot(merged_df['StartDateTime'], merged_df['actual_price'], label='Actual Price', color='red', marker='x')
+plt.plot(merged_df['StartDateTime'], merged_df['Predicted Price [Euro/MWh]'], label='Predicted Price', color='blue', marker='o')
+plt.plot(merged_df['StartDateTime'], merged_df['Actual Price'], label='Actual Price', color='red', marker='x')
 plt.xlabel('Date and Time')
 plt.ylabel('Price [Euro/MWh]')
 plt.title('Predicted vs Actual Electricity Prices (06-Jan-2025 to 12-Jan-2025)')
@@ -391,13 +367,40 @@ plt.tight_layout()
 plt.show()
 
 # Future Prediction Metrics
-if not merged_df.empty:
-    y_true = merged_df['actual_price'].values
-    y_pred = merged_df['Predicted Price [Euro/MWh]'].values
+if merged_df['Actual Price'].notna().sum() > 0:
+    mask = merged_df['Actual Price'].notna()
+    y_true = merged_df.loc[mask, 'Actual Price'].values
+    y_pred = merged_df.loc[mask, 'Predicted Price [Euro/MWh]'].values
     print("\n=== Future Prediction Metrics ===")
     print(f"RMSE: {np.sqrt(mean_squared_error(y_true, y_pred)):.2f}")
     print(f"MAE: {mean_absolute_error(y_true, y_pred):.2f}")
     print(f"R²: {r2_score(y_true, y_pred):.3f}")
     print(f"MAPE: {safe_mape(y_true, y_pred):.2f}%")
 else:
-    print("Insufficient actual data for metric calculation.")
+    print("No actual data available for metric calculation.")
+
+# Alternative Models (XGBoost)
+xgb_model = XGBRegressor(objective='reg:squarederror')
+xgb_model.fit(X_train, y_train)
+y_pred_xgb = xgb_model.predict(X_val)
+print("\n=== XGBoost Evaluation ===")
+print(f"RMSE: {np.sqrt(mean_squared_error(y_val, y_pred_xgb)):.2f}")
+print(f"MAE: {mean_absolute_error(y_val, y_pred_xgb):.2f}")
+print(f"R²: {r2_score(y_val, y_pred_xgb):.3f}")
+print(f"MAPE: {safe_mape(y_val, y_pred_xgb):.2f}%")
+
+# Alternative Models (LSTM)
+X_train_lstm = X_train.values.reshape((X_train.shape[0], 1, X_train.shape[1]))
+X_val_lstm = X_val.values.reshape((X_val.shape[0], 1, X_val.shape[1]))
+lstm_model = Sequential([
+    LSTM(50, activation='relu', input_shape=(1, X_train.shape[1])),
+    Dense(1)
+])
+lstm_model.compile(optimizer='adam', loss='mse')
+lstm_model.fit(X_train_lstm, y_train, epochs=50, batch_size=32, verbose=0)
+y_pred_lstm = lstm_model.predict(X_val_lstm).flatten()
+print("\n=== LSTM Evaluation ===")
+print(f"RMSE: {np.sqrt(mean_squared_error(y_val, y_pred_lstm)):.2f}")
+print(f"MAE: {mean_absolute_error(y_val, y_pred_lstm):.2f}")
+print(f"R²: {r2_score(y_val, y_pred_lstm):.3f}")
+print(f"MAPE: {safe_mape(y_val, y_pred_lstm):.2f}%")
