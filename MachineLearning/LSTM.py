@@ -83,7 +83,10 @@ hist_data['Rolling_Wind_24h'] = hist_data['wind_speed_100m (km/h)'].rolling(wind
 hist_data['Rolling_Load_6h'] = hist_data['total-consumption'].rolling(window=6, min_periods=1).mean()
 hist_data['Rolling_Load_24h'] = hist_data['total-consumption'].rolling(window=24, min_periods=1).mean()
 hist_data['Rolling_Price_Std_24h'] = hist_data['Price'].rolling(window=24, min_periods=1).std()
-hist_data['Rolling_Price_MA_168h'] = hist_data['Price'].rolling(window=168, min_periods=1).mean()  # New long-term trend
+hist_data['Rolling_Price_MA_168h'] = hist_data['Price'].rolling(window=168, min_periods=1).mean()
+hist_data['Rolling_Price_1h'] = hist_data['Price'].rolling(window=1, min_periods=1).mean()
+hist_data['Rolling_Price_Std_3h'] = hist_data['Price'].rolling(window=3, min_periods=1).std()
+hist_data['Temp_Cons_Interact'] = hist_data['temperature_2m'] * hist_data['total-consumption']
 
 for col in hist_data.columns:
     if hist_data[col].dtype in [np.float64, np.int64]:
@@ -100,7 +103,8 @@ features = [
     'Hour_sin', 'Hour_cos', 'DOW_sin', 'DOW_cos',
     'Lag_Price_1h', 'Lag_Price_6h', 'Lag_Price_24h', 'Lag_Price_48h',
     'Rolling_Temp_6h', 'Rolling_Temp_24h', 'Rolling_Wind_6h', 'Rolling_Wind_24h',
-    'Rolling_Load_6h', 'Rolling_Load_24h', 'Rolling_Price_Std_24h', 'Rolling_Price_MA_168h'
+    'Rolling_Load_6h', 'Rolling_Load_24h', 'Rolling_Price_Std_24h', 'Rolling_Price_MA_168h',
+    'Rolling_Price_1h', 'Rolling_Price_Std_3h', 'Temp_Cons_Interact'
 ]
 target = 'Price'
 
@@ -118,14 +122,14 @@ scaler_y = RobustScaler()
 X_scaled = scaler_X.fit_transform(X)
 y_scaled = scaler_y.fit_transform(y.reshape(-1, 1)).flatten()
 
-def create_sequences(X, y, time_steps=48):
+def create_sequences(X, y, time_steps=24):
     X_seq, y_seq = [], []
     for i in range(len(X) - time_steps):
         X_seq.append(X[i:i + time_steps])
         y_seq.append(y[i + time_steps])
     return np.array(X_seq), np.array(y_seq)
 
-time_steps = 48
+time_steps = 24
 X_seq, y_seq = create_sequences(X_scaled, y_scaled, time_steps)
 
 # K-fold cross-validation
@@ -137,41 +141,51 @@ cv_scores = []
 # -----------------------------------
 def build_lstm_model_hp(hp):
     model = Sequential()
-    lstm_layers = hp.Int('lstm_layers', min_value=1, max_value=2, step=1)  # Reduced max layers
+    lstm_layers = hp.Int('lstm_layers', min_value=1, max_value=3, step=1)
     lstm_units = hp.Choice('lstm_units', values=[64, 128, 256])
-    model.add(Bidirectional(LSTM(lstm_units, return_sequences=(lstm_layers > 1), 
-                                 input_shape=(X_seq.shape[1], X_seq.shape[2]))))
-    model.add(Dropout(hp.Float('dropout_1', 0.3, 0.6, step=0.1)))  # Increased Dropout
+    model.add(Bidirectional(LSTM(lstm_units, return_sequences=(lstm_layers > 1),
+                                 input_shape=(time_steps, len(features)))))
+    model.add(Dropout(hp.Float('dropout_1', 0.2, 0.5, step=0.1)))
     if lstm_layers > 1:
-        model.add(Bidirectional(LSTM(hp.Choice('lstm_units_2', values=[64, 128]), return_sequences=False)))
-        model.add(Dropout(hp.Float('dropout_2', 0.3, 0.6, step=0.1)))
-    dense_units = hp.Choice('dense_units', values=[32, 64])
+        for i in range(lstm_layers - 1):
+            model.add(Bidirectional(LSTM(hp.Choice(f'lstm_units_{i+2}', values=[64, 128, 256]),
+                                        return_sequences=(i < lstm_layers - 2))))
+            model.add(Dropout(hp.Float(f'dropout_{i+2}', 0.2, 0.5, step=0.1)))
+    dense_units = hp.Choice('dense_units', values=[32, 64, 128])
     model.add(Dense(dense_units, activation='relu'))
     model.add(Dense(1))
-    lr = hp.Float('learning_rate', 1e-5, 1e-2, sampling='log')
+    lr = hp.Float('learning_rate', 1e-4, 1e-2, sampling='log')
     model.compile(optimizer=Adam(learning_rate=lr), loss='mean_squared_error')
     return model
+
+print(f"TensorFlow Version: {tf.__version__}")
+print(f"X_seq shape: {X_seq.shape}, y_seq shape: {y_seq.shape}")
 
 tuner = RandomSearch(
     build_lstm_model_hp,
     objective='val_loss',
     max_trials=10,
-    executions_per_trial=2,
+    executions_per_trial=1,
     overwrite=True,
     directory='lstm_tuning',
     project_name='enhanced_cyclical_lstm'
 )
 
 early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
 for train_idx, val_idx in kfold.split(X_seq):
     X_train, X_val = X_seq[train_idx], X_seq[val_idx]
     y_train, y_val = y_seq[train_idx], y_seq[val_idx]
-    tuner.search(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_val, y_val),
-                 callbacks=[early_stop], verbose=0)
-    cv_scores.append(tuner.oracle.get_best_trials(num_trials=1)[0].score)
+    try:
+        tuner.search(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_val, y_val),
+                     callbacks=[early_stop], verbose=1)
+        cv_scores.append(tuner.oracle.get_best_trials(num_trials=1)[0].score)
+    except Exception as e:
+        print(f"Error during tuner.search: {e}")
+    break  # Run one fold to test stability
 
 print("Cross-validation scores:", cv_scores)
-print("Mean CV score:", np.mean(cv_scores))
+print("Mean CV score:", np.mean(cv_scores) if cv_scores else "N/A")
 
 best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
 print("Best Hyperparameters:", best_hps.values)
@@ -200,13 +214,14 @@ X_train, X_test = X_seq[:train_size], X_seq[train_size:]
 y_train, y_test = y_seq[:train_size], y_seq[train_size:]
 
 y_pred_scaled = model_hp.predict(X_test).flatten()
-y_pred = scaler_y.inverse_transform(y_pred_scaled.reshape(-1, 1)).flatten()
-y_true = scaler_y.inverse_transform(y_test.reshape(-1, 1)).flatten()
+predicted_prices = scaler_y.inverse_transform(y_pred_scaled.reshape(-1, 1)).flatten()
+predicted_prices = np.clip(predicted_prices, 0, None)
+y_true_prices = hist_data['Price'].iloc[train_size + time_steps:train_size + time_steps + len(y_test)].values
 
-rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-mae = mean_absolute_error(y_true, y_pred)
-r2 = r2_score(y_true, y_pred)
-mape = safe_mape(y_true, y_pred)
+rmse = np.sqrt(mean_squared_error(y_true_prices, predicted_prices))
+mae = mean_absolute_error(y_true_prices, predicted_prices)
+r2 = r2_score(y_true_prices, predicted_prices)
+mape = safe_mape(y_true_prices, predicted_prices)
 
 print("\nEvaluation Metrics on Historical Data:")
 print(f"RMSE: {rmse:.2f}")
@@ -215,8 +230,8 @@ print(f"R²: {r2:.4f}")
 print(f"MAPE: {mape:.2f}%")
 
 plt.figure(figsize=(10, 6))
-plt.plot(y_true, label='Actual')
-plt.plot(y_pred, label='Predicted')
+plt.plot(y_true_prices, label='Actual')
+plt.plot(predicted_prices, label='Predicted')
 plt.legend()
 plt.title("Historical Data: Actual vs Predicted (Enhanced LSTM with Cyclical Features)")
 plt.show()
@@ -240,8 +255,8 @@ future_df['DayOfWeek'] = future_df['DayOfWeek'].str.title().map(day_map)
 future_df.sort_values('StartDateTime', inplace=True)
 
 forecast_start_dt = pd.to_datetime('06/01/2025 00:00:00', format='%d/%m/%Y %H:%M:%S')
-forecast_end_dt = pd.to_datetime('12/01/2025 23:00:00', format='%d/%m/%Y %H:%M:%S')
-future_df = future_df[(future_df['StartDateTime'] >= forecast_start_dt) & 
+forecast_end_dt = pd.to_datetime('12/01/2025 00:00:00', format='%d/%m/%Y %H:%M:%S')
+future_df = future_df[(future_df['StartDateTime'] >= forecast_start_dt) &
                       (future_df['StartDateTime'] <= forecast_end_dt)].copy()
 
 for col in future_df.columns:
@@ -257,6 +272,17 @@ future_df['Hour_sin'] = np.sin(2 * np.pi * future_df['Hour'] / 24)
 future_df['Hour_cos'] = np.cos(2 * np.pi * future_df['Hour'] / 24)
 future_df['DOW_sin'] = np.sin(2 * np.pi * future_df['DayOfWeek'] / 7)
 future_df['DOW_cos'] = np.cos(2 * np.pi * future_df['DayOfWeek'] / 7)
+future_df['Rolling_Price_1h'] = future_df.get('Price', pd.Series(np.nan)).rolling(window=1, min_periods=1).mean()
+future_df['Rolling_Price_Std_3h'] = future_df.get('Price', pd.Series(np.nan)).rolling(window=3, min_periods=1).std()
+future_df['Temp_Cons_Interact'] = future_df['temperature_2m'] * future_df['total-consumption']
+
+# Initialize full price history
+full_price_history = list(hist_data['Price'])
+
+# Check if hist_data has enough rows
+print(f"Number of rows in hist_data: {len(hist_data)}")
+if len(hist_data) < 48:
+    print("Warning: hist_data has fewer than 48 rows. Some lag values may use the earliest available price.")
 
 last_historical_data = hist_data.tail(time_steps)
 initial_sequence = last_historical_data[features].values
@@ -264,31 +290,34 @@ initial_sequence_scaled = scaler_X.transform(initial_sequence)
 
 predictions = []
 window_size = 24  # Recalibrate every 24 hours
+smoothing_window = 6  # Smooth lagged values
+
 for idx, row in future_df.iterrows():
     dt = row['StartDateTime']
-    
-    lag_1 = predictions[-1] if predictions and idx > 0 else last_historical_data['Price'].iloc[-1]
-    lag_6 = predictions[-6] if len(predictions) >= 6 else last_historical_data['Price'].iloc[-6]
-    lag_24 = predictions[-24] if len(predictions) >= 24 else last_historical_data['Price'].iloc[-24]
-    lag_48 = predictions[-48] if len(predictions) >= 48 else last_historical_data['Price'].iloc[-48]
-    
+
+    # Calculate lags using full_price_history
+    lag_1 = full_price_history[-1] if len(predictions) < 1 else predictions[-1]
+    lag_6 = np.mean(full_price_history[-6:]) if len(predictions) < 6 else np.mean(predictions[-6:])
+    lag_24 = np.mean(full_price_history[-24:]) if len(predictions) < 24 else np.mean(predictions[-24:])
+    lag_48 = np.mean(full_price_history[-48:]) if len(predictions) < 48 else np.mean(predictions[-48:])
+
     hour = dt.hour
     hour_sin = np.sin(2 * np.pi * hour / 24)
     hour_cos = np.cos(2 * np.pi * hour / 24)
     dow = dt.dayofweek
     dow_sin = np.sin(2 * np.pi * dow / 7)
     dow_cos = np.cos(2 * np.pi * dow / 7)
-    
+
     if len(predictions) >= 24:
         rolling_std = np.std(predictions[-24:])
         rolling_ma = np.mean(predictions[-24:])
     else:
-        hist_prices = last_historical_data['Price'].iloc[-(24 - len(predictions)):] if len(predictions) < 24 else []
+        hist_prices = full_price_history[-(24 - len(predictions)):] if len(predictions) < 24 else []
         pred_prices = predictions
-        combined = list(hist_prices) + pred_prices
+        combined = hist_prices + pred_prices
         rolling_std = np.std(combined[-24:])
         rolling_ma = np.mean(combined[-24:])
-    
+
     features_for_pred = [
         row['temperature_2m'], row['precipitation (mm)'], row['rain (mm)'], row['snowfall (cm)'],
         row['weather_code (wmo code)'], row['wind_speed_100m (km/h)'], row['relative_humidity_2m (%)'],
@@ -300,23 +329,29 @@ for idx, row in future_df.iterrows():
         np.mean(initial_sequence_scaled[-24:, features.index('wind_speed_100m (km/h)')]),
         np.mean(initial_sequence_scaled[-6:, features.index('total-consumption')]),
         np.mean(initial_sequence_scaled[-24:, features.index('total-consumption')]),
-        rolling_std, rolling_ma
+        rolling_std, rolling_ma,
+        row['Rolling_Price_1h'] if pd.notna(row['Rolling_Price_1h']) else rolling_ma,
+        row['Rolling_Price_Std_3h'] if pd.notna(row['Rolling_Price_Std_3h']) else rolling_std,
+        row['Temp_Cons_Interact']
     ]
-    
+
     pred_df = pd.DataFrame([features_for_pred], columns=features)
     features_scaled = scaler_X.transform(pred_df)
-    
+
     initial_sequence_scaled = np.roll(initial_sequence_scaled, -1, axis=0)
     initial_sequence_scaled[-1] = features_scaled[0]
-    
+
     input_seq = initial_sequence_scaled.reshape(1, time_steps, initial_sequence_scaled.shape[1])
-    pred_scaled = model_hp.predict(input_seq).flatten()
-    pred_price = scaler_y.inverse_transform(pred_scaled.reshape(-1, 1))[0][0]
-    predictions.append(pred_price)
-    
-    # Recalibrate every 24 hours
+    predicted_price_scaled = model_hp.predict(input_seq).flatten()[0]
+    predicted_price = scaler_y.inverse_transform([[predicted_price_scaled]])[0][0]
+    predicted_price = np.clip(predicted_price, 0, None)
+    predictions.append(predicted_price)
+    full_price_history.append(predicted_price)  # Update full price history
+
     if (idx + 1) % window_size == 0 and idx < len(future_df) - 1:
-        last_historical_data = pd.concat([last_historical_data.iloc[1:], pd.DataFrame([row], columns=hist_data.columns)])
+        row_with_price = row.copy()
+        row_with_price['Price'] = predicted_price
+        last_historical_data = pd.concat([last_historical_data.iloc[1:], pd.DataFrame([row_with_price], columns=hist_data.columns)])
         initial_sequence = last_historical_data.tail(time_steps)[features].values
         initial_sequence_scaled = scaler_X.transform(initial_sequence)
 
