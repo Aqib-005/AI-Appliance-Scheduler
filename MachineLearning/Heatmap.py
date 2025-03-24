@@ -93,7 +93,7 @@ sns.heatmap(corr_matrix,
 
 plt.title("Electricity Price Correlation Matrix\n", fontsize=20, pad=25)
 plt.xticks(rotation=55, ha='right', fontsize=14)
-plt.yticks(fontsize=14)
+plt.yticks(fontsize=14) 
 plt.tight_layout()
 plt.savefig('price_correlation_heatmap_full.png', dpi=300, bbox_inches='tight')
 plt.show()
