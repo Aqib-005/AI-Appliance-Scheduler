@@ -74,7 +74,7 @@ class ScheduleController extends Controller
 
         // Call the FastAPI endpoint to get predictions
         try {
-            $response = Http::timeout(300)->post('http://127.0.0.1:8000/predict', [
+            $response = Http::timeout(300)->post('http://127.0.0.1:8001/predict', [
                 'start_date' => $start_date,
             ]);
 
@@ -149,6 +149,15 @@ class ScheduleController extends Controller
             $predictionsByDay[$day][$hour] = $prediction;
         }
 
+        foreach ($predictionsByDay as $day => &$hours) {
+            ksort($hours); // Ensure hours are ordered 0-23
+            $prices = array_column($hours, 'Predicted Price [Euro/MWh]');
+            $peakThreshold = $this->calculatePercentile($prices, 75);
+            foreach ($hours as $hour => $data) {
+                $hours[$hour]['isPeak'] = ($data['Predicted Price [Euro/MWh]'] >= $peakThreshold);
+            }
+        }
+
         // Sort appliances by priority (power * duration)
         usort($appliances, function ($a, $b) {
             $priorityA = (float) $a['power'] * (float) $a['duration'];
@@ -182,7 +191,7 @@ class ScheduleController extends Controller
                 $preferredStart,
                 $preferredEnd,
                 $duration,
-                $penalty
+                $appliance['power'] // Pass power for dynamic scaling (optional)
             );
 
             // Fallback: Entire day if no preferred window found
@@ -219,17 +228,15 @@ class ScheduleController extends Controller
         return $schedule;
     }
 
-    private function findWindows($dayPredictions, $daySchedule, $startMin, $endMax, $duration, $penalty)
+    private function findWindows($dayPredictions, $daySchedule, $startMin, $endMax, $duration, $power)
     {
         $windows = [];
-
         for ($startHour = $startMin; $startHour <= $endMax; $startHour++) {
             $adjustedCost = 0;
             $validWindow = true;
 
             for ($i = 0; $i < $duration; $i++) {
                 $currentHour = $startHour + $i;
-
                 if (!isset($dayPredictions[$currentHour])) {
                     $validWindow = false;
                     break;
@@ -237,20 +244,35 @@ class ScheduleController extends Controller
 
                 $basePrice = (float) $dayPredictions[$currentHour]['Predicted Price [Euro/MWh]'];
                 $applianceCount = $daySchedule[$currentHour] ?? 0;
-                $adjustedCost += $basePrice * (1 + $penalty * $applianceCount);
+                $isPeak = $dayPredictions[$currentHour]['isPeak'] ?? false;
+
+                // Dynamic penalties (customizable coefficients)
+                $congestionPenalty = 0.05 * pow($applianceCount, 2); // Quadratic growth
+                $peakPenalty = $isPeak ? 0.2 : 0;
+
+                $adjustedCost += $basePrice * (1 + $congestionPenalty + $peakPenalty);
             }
 
             if ($validWindow) {
                 $windows[] = [
                     'startHour' => $startHour,
                     'adjustedCost' => $adjustedCost,
-                    'inPreferred' => ($startHour >= $startMin &&
-                        ($startHour + $duration - 1) <= $endMax)
+                    'inPreferred' => ($startHour >= $startMin && ($startHour + $duration - 1) <= $endMax)
                 ];
             }
         }
-
         return $windows;
+    }
+
+    private function calculatePercentile($array, $percentile)
+    {
+        sort($array);
+        $index = ($percentile / 100) * (count($array) - 1);
+        $floor = floor($index);
+        $fraction = $index - $floor;
+        return $floor + 1 < count($array)
+            ? $array[$floor] + $fraction * ($array[$floor + 1] - $array[$floor])
+            : $array[$floor];
     }
 
     private function assignWindow($window, $appliance, $day, &$schedule)
