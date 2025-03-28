@@ -139,7 +139,6 @@ class ScheduleController extends Controller
 
         // Initialize schedule tracking appliance counts per hour
         $schedule = [];
-        $penalty = 0.1; // Adjustable penalty factor (10% per appliance) //have a good citation
 
         // Group predictions by day
         $predictionsByDay = [];
@@ -149,12 +148,19 @@ class ScheduleController extends Controller
             $predictionsByDay[$day][$hour] = $prediction;
         }
 
+
         foreach ($predictionsByDay as $day => &$hours) {
-            ksort($hours); // Ensure hours are ordered 0-23
+            ksort($hours);
             $prices = array_column($hours, 'Predicted Price [Euro/MWh]');
+
+            // Dynamic thresholds
+            $medianPrice = $this->calculatePercentile($prices, 50);
             $peakThreshold = $this->calculatePercentile($prices, 75);
+
             foreach ($hours as $hour => $data) {
-                $hours[$hour]['isPeak'] = ($data['Predicted Price [Euro/MWh]'] >= $peakThreshold);
+                $price = (float) $data['Predicted Price [Euro/MWh]'];
+                $hours[$hour]['isPeak'] = ($price >= $peakThreshold);
+                $hours[$hour]['peakPenalty'] = max(0, ($price - $medianPrice) / $medianPrice);
             }
         }
 
@@ -191,7 +197,6 @@ class ScheduleController extends Controller
                 $preferredStart,
                 $preferredEnd,
                 $duration,
-                $appliance['power'] // Pass power for dynamic scaling (optional)
             );
 
             // Fallback: Entire day if no preferred window found
@@ -205,8 +210,7 @@ class ScheduleController extends Controller
                     $schedule[$day] ?? [],
                     0, // Start at midnight
                     23 - $duration + 1, // Allow full day search
-                    $duration,
-                    $penalty
+                    $duration
                 );
             }
 
@@ -228,7 +232,7 @@ class ScheduleController extends Controller
         return $schedule;
     }
 
-    private function findWindows($dayPredictions, $daySchedule, $startMin, $endMax, $duration, $power)
+    private function findWindows($dayPredictions, $daySchedule, $startMin, $endMax, $duration)
     {
         $windows = [];
         for ($startHour = $startMin; $startHour <= $endMax; $startHour++) {
@@ -244,12 +248,10 @@ class ScheduleController extends Controller
 
                 $basePrice = (float) $dayPredictions[$currentHour]['Predicted Price [Euro/MWh]'];
                 $applianceCount = $daySchedule[$currentHour] ?? 0;
-                $isPeak = $dayPredictions[$currentHour]['isPeak'] ?? false;
+                $peakPenalty = $dayPredictions[$currentHour]['peakPenalty'] ?? 0;
 
-                // Dynamic penalties (customizable coefficients)
-                $congestionPenalty = 0.05 * pow($applianceCount, 2); // Quadratic growth
-                $peakPenalty = $isPeak ? 0.2 : 0;
-
+                // Calibrated penalties
+                $congestionPenalty = 0.03 * pow($applianceCount, 2);
                 $adjustedCost += $basePrice * (1 + $congestionPenalty + $peakPenalty);
             }
 
