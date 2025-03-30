@@ -134,7 +134,7 @@ class ScheduleController extends Controller
 
         // Sort predictions by price 
         usort($predictions, function ($a, $b) {
-            return (float) $a['Predicted Price [Euro/MWh]'] <=> (float) $b['Predicted Price [Euro/MWh]'];
+            return (float) $a['Predicted_Price'] <=> (float) $b['Predicted_Price'];
         });
 
         // Initialize schedule tracking appliance counts per hour
@@ -143,22 +143,22 @@ class ScheduleController extends Controller
         // Group predictions by day
         $predictionsByDay = [];
         foreach ($predictions as $prediction) {
-            $day = date('l', strtotime($prediction['Start date/time']));
-            $hour = (int) date('H', strtotime($prediction['Start date/time']));
+            $day = date('l', strtotime($prediction['StartDateTime']));
+            $hour = (int) date('H', strtotime($prediction['StartDateTime']));
             $predictionsByDay[$day][$hour] = $prediction;
         }
 
 
         foreach ($predictionsByDay as $day => &$hours) {
             ksort($hours);
-            $prices = array_column($hours, 'Predicted Price [Euro/MWh]');
+            $prices = array_column($hours, 'Predicted_Price');
 
             // Dynamic thresholds
             $medianPrice = $this->calculatePercentile($prices, 50);
             $peakThreshold = $this->calculatePercentile($prices, 75);
 
             foreach ($hours as $hour => $data) {
-                $price = (float) $data['Predicted Price [Euro/MWh]'];
+                $price = (float) $data['Predicted_Price'];
                 $hours[$hour]['isPeak'] = ($price >= $peakThreshold);
                 $hours[$hour]['peakPenalty'] = max(0, ($price - $medianPrice) / $medianPrice);
             }
@@ -246,7 +246,7 @@ class ScheduleController extends Controller
                     break;
                 }
 
-                $basePrice = (float) $dayPredictions[$currentHour]['Predicted Price [Euro/MWh]'];
+                $basePrice = (float) $dayPredictions[$currentHour]['Predicted_Price'];
                 $applianceCount = $daySchedule[$currentHour] ?? 0;
                 $peakPenalty = $dayPredictions[$currentHour]['peakPenalty'] ?? 0;
 
