@@ -11,6 +11,8 @@
         .left {
             flex: 60%;
             padding: 10px;
+            display: flex;
+            flex-direction: column;
         }
 
         .right {
@@ -22,6 +24,12 @@
             border: 1px solid #ccc;
             padding: 10px;
             margin-bottom: 20px;
+        }
+
+        /* Added container for the timetable table */
+        .table-container {
+            flex: 1;
+            overflow-y: auto;
         }
 
         table {
@@ -51,6 +59,10 @@
             padding: 10px 20px;
             cursor: pointer;
         }
+
+        .current-hour {
+            border-left: 3px solid #007bff;
+        }
     </style>
 </head>
 
@@ -66,32 +78,35 @@
                     <button>Schedule</button>
                 </a>
             </div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
-                            <th>{{ $day }}</th>
-                        @endforeach
-                    </tr>
-                </thead>
-                <tbody>
-                    @for ($hour = 0; $hour < 24; $hour++)
+            <!-- Wrap the timetable in a container that scrolls if needed -->
+            <div class="table-container">
+                <table>
+                    <thead>
                         <tr>
-                            <td>{{ sprintf('%02d:00', $hour) }}</td>
+                            <th>Time</th>
                             @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
-                                <td>
-                                    @foreach ($schedule as $entry)
-                                        @if ($entry->day === $day && $hour >= $entry->start_hour && $hour < $entry->end_hour)
-                                            {{ $entry->appliance->name ?? 'Appliance Not Found' }}
-                                        @endif
-                                    @endforeach
-                                </td>
+                                <th>{{ $day }}</th>
                             @endforeach
                         </tr>
-                    @endfor
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        @for ($hour = 0; $hour < 24; $hour++)
+                            <tr>
+                                <td>{{ sprintf('%02d:00', $hour) }}</td>
+                                @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
+                                    <td>
+                                        @foreach ($schedule as $entry)
+                                            @if ($entry->day === $day && $hour >= $entry->start_hour && $hour < $entry->end_hour)
+                                                {{ $entry->appliance->name ?? 'Appliance Not Found' }}
+                                            @endif
+                                        @endforeach
+                                    </td>
+                                @endforeach
+                            </tr>
+                        @endfor
+                    </tbody>
+                </table>
+            </div>
         </div>
 
         <!-- Right Side: Appliances and Prices -->
@@ -109,34 +124,92 @@
                 </a>
             </div>
 
-            <!-- Predicted Prices -->
+            <!-- Predicted Prices (Line Chart) -->
             <div class="window">
                 <h2>Predicted Prices</h2>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Start Date/Time</th>
-                            <th>Predicted Price (€/MWh)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @if (!empty($predictions))
-                            @foreach ($predictions as $prediction)
-                                <tr>
-                                    <td>{{ \Carbon\Carbon::parse($prediction['StartDateTime'])->format('Y-m-d H:i') }}</td>
-                                    <td>{{ $prediction['Predicted_Price'] }}</td>
-                                </tr>
-                            @endforeach
-                        @else
-                            <tr>
-                                <td colspan="2">No predictions available.</td>
-                            </tr>
-                        @endif
-                    </tbody>
-                </table>
+
+                @if (!empty($predictions))
+                                @php
+                                    $chartData = [];
+                                    foreach ($predictions as $prediction) {
+                                        $datetime = \Carbon\Carbon::parse($prediction['StartDateTime'])->toDateTimeString();
+                                        $chartData[] = [
+                                            'x' => $datetime,
+                                            'y' => $prediction['Predicted_Price']
+                                        ];
+                                    }
+                                @endphp
+
+                                <canvas id="predictionsChart"></canvas>
+
+                                <!-- Include Chart.js and the Moment adapter -->
+                                <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+                                <script src="https://cdn.jsdelivr.net/npm/moment@2.29.3/moment.min.js"></script>
+                                <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment"></script>
+
+                                <script>
+                                    const ctx = document.getElementById('predictionsChart').getContext('2d');
+                                    const chartData = {!! json_encode($chartData) !!};
+
+                                    new Chart(ctx, {
+                                        type: 'line',
+                                        data: {
+                                            datasets: [{
+                                                label: 'Predicted Price (€/MWh)',
+                                                data: chartData,
+                                                borderColor: 'rgba(75, 192, 192, 1)',
+                                                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                                                fill: false,
+                                                tension: 0.1
+                                            }]
+                                        },
+                                        options: {
+                                            scales: {
+                                                x: {
+                                                    type: 'time',
+                                                    time: {
+                                                        unit: 'day',
+                                                        displayFormats: {
+                                                            day: 'YYYY-MM-DD'
+                                                        }
+                                                    },
+                                                },
+                                                y: {
+                                                    beginAtZero: false
+                                                }
+                                            }
+                                        }
+                                    });
+                                </script>
+                @else
+                    <p>No predictions available.</p>
+                @endif
             </div>
         </div>
     </div>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const now = new Date();
+            const currentHour = now.getHours();
+            const table = document.querySelector('.table-container table');
+            const rows = table.querySelectorAll('tbody tr');
+            if (rows[currentHour]) {
+                rows[currentHour].classList.add('current-hour');
+                rows[currentHour].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', function () {
+            const now = new Date();
+            const currentHour = now.getHours();
+            const table = document.querySelector('.table-container table');
+            const rows = table.querySelectorAll('tbody tr');
+            if (rows[currentHour]) {
+                rows[currentHour].classList.add('current-hour');
+                rows[currentHour].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        });
+    </script>
 </body>
 
 </html>
