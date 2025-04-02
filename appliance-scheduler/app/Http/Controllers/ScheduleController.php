@@ -407,6 +407,7 @@ class ScheduleController extends Controller
     // Update an appliance
     public function updateAppliance(Request $request, $id)
     {
+        \Log::info('updateAppliance() triggered');
         $request->validate([
             'preferred_start' => 'required|date_format:H:i', // Validate time format (HH:mm)
             'preferred_end' => 'required|date_format:H:i',   // Validate time format (HH:mm)
@@ -435,7 +436,6 @@ class ScheduleController extends Controller
 
         // Retrieve the appliance from the appliance table
         $appliance = Appliance::find($request->input('appliance_id'));
-
         if (!$appliance) {
             return response()->json(['success' => false, 'message' => 'Appliance not found.'], 404);
         }
@@ -448,18 +448,58 @@ class ScheduleController extends Controller
         ]);
 
         // Save the selected appliance to the selected_appliance table
-        SelectedAppliance::create([
+        $selectedAppliance = SelectedAppliance::create([
             'appliance_id' => $request->input('appliance_id'),
-            'name' => $appliance->name, // Get name from appliance table
-            'power' => $appliance->power, // Get power from appliance table
+            'name' => $appliance->name,
+            'power' => $appliance->power,
             'preferred_start' => $request->input('preferred_start'),
             'preferred_end' => $request->input('preferred_end'),
             'duration' => $request->input('duration'),
-            'usage_days' => $request->input('usage_days'), // Save as a string
+            'usage_days' => $request->input('usage_days'),
         ]);
+
+        // Return the ID of the new selected appliance
+        return response()->json([
+            'success' => true,
+            'selected_appliance_id' => $selectedAppliance->id,
+        ]);
+    }
+
+    public function getSelectedAppliance($id)
+    {
+        $appliance = SelectedAppliance::find($id);
+        if (!$appliance) {
+            return response()->json(['success' => false, 'message' => 'Appliance not found'], 404);
+        }
+        return response()->json(['success' => true, 'appliance' => $appliance]);
+    }
+
+    public function updateSelectedAppliance(Request $request, $id)
+    {
+        \Log::info('Update request received:', $request->all());
+
+        $request->validate([
+            'preferred_start' => 'required|date_format:H:i',
+            'preferred_end' => 'required|date_format:H:i',
+            'duration' => 'required|numeric|min:0.01',
+        ]);
+
+        $appliance = SelectedAppliance::find($id);
+        if (!$appliance) {
+            return response()->json(['success' => false, 'message' => 'Appliance not found'], 404);
+        }
+
+        $appliance->update([
+            'preferred_start' => $request->preferred_start,
+            'preferred_end' => $request->preferred_end,
+            'duration' => $request->duration,
+        ]);
+
+        \Log::info('Appliance updated successfully', $appliance->toArray());
 
         return response()->json(['success' => true]);
     }
+
 
     public function removeSelectedAppliance($id)
     {

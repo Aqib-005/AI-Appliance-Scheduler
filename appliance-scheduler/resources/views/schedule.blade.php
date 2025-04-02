@@ -2,6 +2,7 @@
 <html>
 
 <head>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Schedule Appliances</title>
     <style>
         body {
@@ -179,6 +180,7 @@
                                 <div class="appliance-item" id="appliance-{{ $appliance->id }}">
                                     <span>{{ $appliance->name }} ({{ $appliance->preferred_start }} -
                                         {{ $appliance->preferred_end }}, {{ $appliance->duration }} hrs)</span>
+                                    <button onclick="openEditAppliancePopup('{{ $appliance->id }}', '{{ $day }}')">Edit</button>
                                     <button
                                         onclick="removeAppliance({{ $appliance->id }}, '{{ strtolower($day) }}')">Remove</button>
                                 </div>
@@ -213,6 +215,28 @@
             <button type="button" onclick="addApplianceToDay()">Add</button>
             <button type="button" onclick="closeSchedulePopup()">Cancel</button>
         </form>
+    </div>
+
+    <!-- Edit Appliance Popup -->
+    <div id="editAppliancePopup" class="popup">
+        <h2>Edit Appliance for <span id="editSelectedDayName"></span></h2>
+        <div id="editApplianceForm" onsubmit="event.preventDefault();">
+            <input type="hidden" id="editApplianceId" name="applianceId">
+            <label for="editApplianceName">Appliance:</label>
+            <input type="text" id="editApplianceName" name="applianceName" readonly>
+            <br>
+            <label for="editPreferredStart">Preferred Start Time:</label>
+            <input type="time" id="editPreferredStart" name="preferredStart" required>
+            <br>
+            <label for="editPreferredEnd">Preferred End Time:</label>
+            <input type="time" id="editPreferredEnd" name="preferredEnd" required>
+            <br>
+            <label for="editDuration">Duration (hours):</label>
+            <input type="number" id="editDuration" name="duration" step="0.01" placeholder="e.g., 2.5" required>
+            <br>
+            <button type="button" onclick="updateAppliance()">Edit</button>
+            <button type="button" onclick="closeEditAppliancePopup()">Cancel</button>
+        </div>
     </div>
 
     <!-- Overlay -->
@@ -334,13 +358,11 @@
                 return;
             }
 
-            // Validate that the duration is a positive number
             if (duration <= 0) {
                 alert('Duration must be a positive number.');
                 return;
             }
 
-            // Save the selected appliance to the database
             fetch('/selected-appliance/add', {
                 method: 'POST',
                 headers: {
@@ -353,7 +375,7 @@
                     preferred_start: preferredStart,
                     preferred_end: preferredEnd,
                     duration: duration,
-                    usage_days: selectedDay, // Save as a string
+                    usage_days: selectedDay,
                 }),
             })
                 .then(response => {
@@ -368,9 +390,11 @@
                         // Create the appliance item
                         const applianceItem = document.createElement('div');
                         applianceItem.className = 'appliance-item';
+                        applianceItem.id = `appliance-${data.selected_appliance_id}`; // Set the id attribute
                         applianceItem.innerHTML = `
                     <span>${document.getElementById('applianceName').value} (${preferredStart} - ${preferredEnd}, ${duration} hrs)</span>
-                    <button onclick="removeAppliance(${data.appliance_id}, '${selectedDay.toLowerCase()}')">Remove</button>
+                    <button onclick="openEditAppliancePopup('${data.selected_appliance_id}', '${selectedDay}')">Edit</button>
+                    <button onclick="removeAppliance(${data.selected_appliance_id}, '${selectedDay.toLowerCase()}')">Remove</button>
                 `;
 
                         // Add the appliance to the selected day's container
@@ -383,9 +407,98 @@
                     }
                 })
                 .catch(error => {
-                    console.error('API Error:', error); // Debugging
+                    console.error('API Error:', error);
                     alert('Failed to add appliance. Please try again.');
                 });
+        }
+
+        function openEditAppliancePopup(applianceId, day) {
+            fetch(`/selected-appliance/get/${applianceId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('editApplianceId').value = data.appliance.id;
+                        console.log('Editing appliance ID:', data.appliance.id);
+                        document.getElementById('editApplianceName').value = data.appliance.name;
+                        document.getElementById('editPreferredStart').value = data.appliance.preferred_start;
+                        document.getElementById('editPreferredEnd').value = data.appliance.preferred_end;
+                        document.getElementById('editDuration').value = data.appliance.duration;
+                        document.getElementById('editSelectedDayName').textContent = day;
+
+                        document.getElementById('editAppliancePopup').classList.add('active');
+                        document.getElementById('overlay').classList.add('active');
+                    } else {
+                        alert('Failed to load appliance details.');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('An error occurred while loading appliance details.');
+                });
+        }
+
+        function updateAppliance() {
+            console.log('updateAppliance() triggered');
+            const applianceId = document.getElementById('editApplianceId').value;
+            console.log('Update URL should be /selected-appliance/update/' + applianceId);
+            let preferredStart = document.getElementById('editPreferredStart').value;
+            let preferredEnd = document.getElementById('editPreferredEnd').value;
+            const duration = parseFloat(document.getElementById('editDuration').value);
+
+            // Trim seconds if present (ensures HH:MM format)
+            preferredStart = preferredStart.substring(0, 5);
+            preferredEnd = preferredEnd.substring(0, 5);
+
+            // Input validation
+            if (!preferredStart || !preferredEnd || isNaN(duration)) {
+                alert('Please fill in all fields correctly.');
+                return;
+            }
+
+            if (duration <= 0) {
+                alert('Duration must be greater than 0.');
+                return;
+            }
+
+            fetch(`/selected-appliance/update/${applianceId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                },
+                body: JSON.stringify({
+                    preferred_start: preferredStart,
+                    preferred_end: preferredEnd,
+                    duration: duration,
+                }),
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        return response.text().then(text => {
+                            throw new Error(`HTTP error! Status: ${response.status}, Response: ${text}`);
+                        });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        const applianceElement = document.getElementById(`appliance-${applianceId}`);
+                        applianceElement.querySelector('span').textContent = `${document.getElementById('editApplianceName').value} (${preferredStart} - ${preferredEnd}, ${duration} hrs)`;
+                        closeEditAppliancePopup();
+                    } else {
+                        alert('Failed to update appliance.');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('An error occurred while saving changes: ' + error.message);
+                });
+        }
+
+
+        function closeEditAppliancePopup() {
+            document.getElementById('editAppliancePopup').classList.remove('active');
+            document.getElementById('overlay').classList.remove('active');
         }
 
         function removeAppliance(applianceId, day) {

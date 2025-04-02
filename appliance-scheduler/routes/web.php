@@ -13,6 +13,8 @@ Route::get('/schedule/create', [ScheduleController::class, 'createSchedule'])->n
 Route::post('/schedule/store', [ScheduleController::class, 'storeSchedule'])->name('schedule.store');
 Route::get('/results', [ScheduleController::class, 'showResults'])->name('results');
 Route::post('/selected-appliance/add', [ScheduleController::class, 'addSelectedAppliance'])->name('selected-appliance.add');
+Route::get('/selected-appliance/get/{id}', [ScheduleController::class, 'getSelectedAppliance']);
+Route::put('/selected-appliance/update/{id}', [ScheduleController::class, 'updateSelectedAppliance']);
 Route::delete('/selected-appliance/remove/{id}', [ScheduleController::class, 'removeSelectedAppliance'])->name('selected-appliance.remove');
 
 
