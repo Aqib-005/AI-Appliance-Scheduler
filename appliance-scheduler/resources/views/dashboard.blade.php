@@ -26,10 +26,13 @@
             margin-bottom: 20px;
         }
 
-        /* Added container for the timetable table */
+        /* Container for the timetable table with fixed height */
         .table-container {
             flex: 1;
+            height: 600px;
+            /* Adjust this height as needed */
             overflow-y: auto;
+            border: 1px solid #ddd;
         }
 
         table {
@@ -62,6 +65,7 @@
 
         .current-hour {
             border-left: 3px solid #007bff;
+            background-color: #e9f5ff;
         }
     </style>
 </head>
@@ -78,7 +82,7 @@
                     <button>Schedule</button>
                 </a>
             </div>
-            <!-- Wrap the timetable in a container that scrolls if needed -->
+            <!-- Timetable container with its own scroll -->
             <div class="table-container">
                 <table>
                     <thead>
@@ -91,7 +95,7 @@
                     </thead>
                     <tbody>
                         @for ($hour = 0; $hour < 24; $hour++)
-                            <tr>
+                            <tr id="row-{{ $hour }}">
                                 <td>{{ sprintf('%02d:00', $hour) }}</td>
                                 @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
                                     <td>
@@ -127,7 +131,6 @@
             <!-- Predicted Prices (Line Chart) -->
             <div class="window">
                 <h2>Predicted Prices</h2>
-
                 @if (!empty($predictions))
                                 @php
                                     $chartData = [];
@@ -187,26 +190,20 @@
             </div>
         </div>
     </div>
+
     <script>
         document.addEventListener('DOMContentLoaded', function () {
             const now = new Date();
             const currentHour = now.getHours();
-            const table = document.querySelector('.table-container table');
-            const rows = table.querySelectorAll('tbody tr');
-            if (rows[currentHour]) {
-                rows[currentHour].classList.add('current-hour');
-                rows[currentHour].scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }
-        });
-
-        document.addEventListener('DOMContentLoaded', function () {
-            const now = new Date();
-            const currentHour = now.getHours();
-            const table = document.querySelector('.table-container table');
-            const rows = table.querySelectorAll('tbody tr');
-            if (rows[currentHour]) {
-                rows[currentHour].classList.add('current-hour');
-                rows[currentHour].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const tableContainer = document.querySelector('.table-container');
+            const currentRow = document.getElementById(`row-${currentHour}`);
+            if (currentRow) {
+                currentRow.classList.add('current-hour');
+                // Scroll the container so that the current hour is centered vertically
+                const containerHeight = tableContainer.clientHeight;
+                const rowTop = currentRow.offsetTop;
+                const rowHeight = currentRow.offsetHeight;
+                tableContainer.scrollTop = rowTop - (containerHeight / 2) + (rowHeight / 2);
             }
         });
     </script>
