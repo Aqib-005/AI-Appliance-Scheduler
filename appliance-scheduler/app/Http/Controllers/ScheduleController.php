@@ -13,37 +13,50 @@ class ScheduleController extends Controller
     // Display the dashboard
     public function dashboard()
     {
-        // Fetch predictions from the session
+        // Fetch predictions from the session (if any) and do NOT forget them immediately
+        // so that we can use them for cost calculations.
         $predictions = session('predictions', []);
 
-        // Clear predictions from the session (optional)
-        session()->forget('predictions');
-
-        // Fetch appliances and selected appliances with the appliance relationship
-        $appliances = Appliance::all();
-        $selectedAppliances = SelectedAppliance::with('appliance')->get();
-
-        // Fetch the schedule from the `schedules` table
-        $schedule = Schedule::with('appliance')->get();
-
-        // Debugging: Check for null appliance relationships
-        foreach ($selectedAppliances as $selectedAppliance) {
-            if (!$selectedAppliance->appliance) {
-                \Log::warning('SelectedAppliance has no associated Appliance', [
-                    'selected_appliance_id' => $selectedAppliance->id,
-                    'appliance_id' => $selectedAppliance->appliance_id,
-                ]);
-            }
+        // Build an associative array: $prices[day][hour] = predicted price (€/MWh)
+        $pricesByDayHour = [];
+        foreach ($predictions as $prediction) {
+            $dt = \Carbon\Carbon::parse($prediction['StartDateTime']);
+            $day = $dt->format('l'); // e.g., "Monday"
+            $hour = (int) $dt->format('H');
+            $pricesByDayHour[$day][$hour] = $prediction['Predicted_Price'];
         }
 
-        // Pass the data to the view
+        // Fetch appliances and schedules as before
+        $appliances = Appliance::all();
+        $selectedAppliances = SelectedAppliance::with('appliance')->get();
+        $schedule = Schedule::with('appliance')->get();
+
+        // Calculate weekly cost by summing, for each schedule entry, over its hours:
+        $weeklyCost = 0;
+        foreach ($schedule as $s) {
+            $duration = $s->end_hour - $s->start_hour;
+            $power = $s->appliance ? $s->appliance->power : 0;
+            $costForSchedule = 0;
+            for ($h = $s->start_hour; $h < $s->end_hour; $h++) {
+                if (isset($pricesByDayHour[$s->day][$h])) {
+                    // Convert €/MWh to €/kWh by dividing by 1000
+                    $pricePerKWh = $pricesByDayHour[$s->day][$h] / 1000;
+                    // Cost for this hour: power (kW) * pricePerKWh (€/kWh)
+                    $costForSchedule += $power * $pricePerKWh;
+                }
+            }
+            $weeklyCost += $costForSchedule;
+        }
+
         return view('dashboard', [
             'appliances' => $appliances,
             'selectedAppliances' => $selectedAppliances,
             'schedule' => $schedule,
             'predictions' => $predictions,
+            'weeklyCost' => $weeklyCost,
         ]);
     }
+
 
     public function showResults()
     {

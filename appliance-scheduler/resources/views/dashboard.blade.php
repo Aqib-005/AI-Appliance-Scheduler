@@ -26,13 +26,18 @@
             margin-bottom: 20px;
         }
 
-        /* Container for the timetable table with fixed height */
+        /* 
+           Table container has a fixed height in standard view so only a portion 
+           of the 24-hour table is visible, and we can scroll to see the rest.
+        */
         .table-container {
             flex: 1;
-            height: 600px;
-            /* Adjust this height as needed */
+            height: 400px;
+            /* Adjust as needed for a 'mini' timetable */
             overflow-y: auto;
             border: 1px solid #ddd;
+            position: relative;
+            /* needed for fullscreen positioning */
         }
 
         table {
@@ -45,6 +50,8 @@
             border: 1px solid #ddd;
             padding: 8px;
             text-align: left;
+            white-space: nowrap;
+            /* keep time entries on one line */
         }
 
         th {
@@ -53,8 +60,8 @@
 
         .button-container {
             display: flex;
-            justify-content: space-between;
             align-items: center;
+            gap: 10px;
             margin-bottom: 20px;
         }
 
@@ -67,6 +74,44 @@
             border-left: 3px solid #007bff;
             background-color: #e9f5ff;
         }
+
+        .weekly-cost {
+            margin-bottom: 10px;
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+
+        /* Fullscreen mode: fill the viewport, still scrollable if table is taller */
+        .table-container.fullscreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 9999;
+            background-color: #fff;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+            overflow-y: auto;
+            /* Keep scroll in fullscreen mode as well */
+        }
+
+        /* The exit fullscreen (X) button in top-right corner */
+        #exitFullscreenBtn {
+            display: none;
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 10001;
+            font-size: 1.2em;
+            background-color: #dc3545;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 6px 12px;
+            cursor: pointer;
+        }
     </style>
 </head>
 
@@ -74,16 +119,27 @@
     <h1>Dashboard</h1>
 
     <div class="container">
-        <!-- Left Side: Timetable -->
+        <!-- Left Side: Timetable and Weekly Cost -->
         <div class="left">
             <div class="button-container">
-                <h2>Scheduled Appliances</h2>
+                <h2 style="margin: 0;">Scheduled Appliances</h2>
                 <a href="{{ route('schedule.create') }}">
                     <button>Schedule</button>
                 </a>
+                <!-- Fullscreen toggle button -->
+                <button id="toggleFullscreenBtn">Fullscreen</button>
             </div>
-            <!-- Timetable container with its own scroll -->
-            <div class="table-container">
+
+            <!-- Weekly Cost Display -->
+            <div class="weekly-cost">
+                Weekly Cost: €{{ number_format($weeklyCost, 2) }}
+            </div>
+
+            <!-- Timetable container (mini view with scrollbar) -->
+            <div class="table-container" id="timetableContainer">
+                <!-- X button to exit fullscreen -->
+                <button id="exitFullscreenBtn">X</button>
+
                 <table>
                     <thead>
                         <tr>
@@ -192,19 +248,44 @@
     </div>
 
     <script>
-        document.addEventListener('DOMContentLoaded', function () {
+        // Center the current hour row in the container
+        function scrollToCurrentHour() {
             const now = new Date();
             const currentHour = now.getHours();
-            const tableContainer = document.querySelector('.table-container');
+            const tableContainer = document.getElementById('timetableContainer');
             const currentRow = document.getElementById(`row-${currentHour}`);
             if (currentRow) {
                 currentRow.classList.add('current-hour');
-                // Scroll the container so that the current hour is centered vertically
                 const containerHeight = tableContainer.clientHeight;
                 const rowTop = currentRow.offsetTop;
                 const rowHeight = currentRow.offsetHeight;
                 tableContainer.scrollTop = rowTop - (containerHeight / 2) + (rowHeight / 2);
             }
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+            // 1) Scroll to the current hour in standard view
+            scrollToCurrentHour();
+
+            // 2) Fullscreen toggle
+            const toggleFullscreenBtn = document.getElementById('toggleFullscreenBtn');
+            const exitFullscreenBtn = document.getElementById('exitFullscreenBtn');
+            const tableContainer = document.getElementById('timetableContainer');
+
+            toggleFullscreenBtn.addEventListener('click', () => {
+                // Enter fullscreen
+                tableContainer.classList.add('fullscreen');
+                exitFullscreenBtn.style.display = 'block';
+                // Keep the scroll bar in fullscreen (overflow-y: auto is set in CSS)
+            });
+
+            exitFullscreenBtn.addEventListener('click', () => {
+                // Exit fullscreen
+                tableContainer.classList.remove('fullscreen');
+                exitFullscreenBtn.style.display = 'none';
+                // Re-center the current hour after returning to mini mode
+                scrollToCurrentHour();
+            });
         });
     </script>
 </body>
