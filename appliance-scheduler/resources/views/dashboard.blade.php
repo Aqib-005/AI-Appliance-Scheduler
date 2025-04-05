@@ -26,18 +26,14 @@
             margin-bottom: 20px;
         }
 
-        /* 
-           Table container has a fixed height in standard view so only a portion 
-           of the 24-hour table is visible, and we can scroll to see the rest.
-        */
+        /* Timetable container with fixed mini height */
         .table-container {
             flex: 1;
             height: 400px;
-            /* Adjust as needed for a 'mini' timetable */
             overflow-y: auto;
             border: 1px solid #ddd;
             position: relative;
-            /* needed for fullscreen positioning */
+            width: 100%;
         }
 
         table {
@@ -51,7 +47,6 @@
             padding: 8px;
             text-align: left;
             white-space: nowrap;
-            /* keep time entries on one line */
         }
 
         th {
@@ -81,7 +76,7 @@
             font-weight: bold;
         }
 
-        /* Fullscreen mode: fill the viewport, still scrollable if table is taller */
+        /* Fullscreen mode for timetable */
         .table-container.fullscreen {
             position: fixed;
             top: 0;
@@ -94,10 +89,9 @@
             padding: 20px;
             box-sizing: border-box;
             overflow-y: auto;
-            /* Keep scroll in fullscreen mode as well */
         }
 
-        /* The exit fullscreen (X) button in top-right corner */
+        /* Exit fullscreen (X) button */
         #exitFullscreenBtn {
             display: none;
             position: absolute;
@@ -135,11 +129,10 @@
                 Weekly Cost: €{{ number_format($weeklyCost, 2) }}
             </div>
 
-            <!-- Timetable container (mini view with scrollbar) -->
+            <!-- Timetable container -->
             <div class="table-container" id="timetableContainer">
-                <!-- X button to exit fullscreen -->
+                <!-- Exit fullscreen button -->
                 <button id="exitFullscreenBtn">X</button>
-
                 <table>
                     <thead>
                         <tr>
@@ -151,7 +144,7 @@
                     </thead>
                     <tbody>
                         @for ($hour = 0; $hour < 24; $hour++)
-                            <tr id="row-{{ $hour }}">
+                            <tr id="row-{{ $hour }}" data-hour="{{ $hour }}">
                                 <td>{{ sprintf('%02d:00', $hour) }}</td>
                                 @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
                                     <td>
@@ -248,42 +241,32 @@
     </div>
 
     <script>
-        // Center the current hour row in the container
+        // Scroll to the current hour row and add highlight
         function scrollToCurrentHour() {
-            const now = new Date();
-            const currentHour = now.getHours();
             const tableContainer = document.getElementById('timetableContainer');
-            const currentRow = document.getElementById(`row-${currentHour}`);
+            const currentRow = document.getElementById(`row-${new Date().getHours()}`);
             if (currentRow) {
                 currentRow.classList.add('current-hour');
-                const containerHeight = tableContainer.clientHeight;
-                const rowTop = currentRow.offsetTop;
-                const rowHeight = currentRow.offsetHeight;
-                tableContainer.scrollTop = rowTop - (containerHeight / 2) + (rowHeight / 2);
+                tableContainer.scrollTop = currentRow.offsetTop - tableContainer.clientHeight / 2;
             }
         }
 
         document.addEventListener('DOMContentLoaded', function () {
-            // 1) Scroll to the current hour in standard view
+            // Initial scroll positioning
             scrollToCurrentHour();
 
-            // 2) Fullscreen toggle
             const toggleFullscreenBtn = document.getElementById('toggleFullscreenBtn');
             const exitFullscreenBtn = document.getElementById('exitFullscreenBtn');
             const tableContainer = document.getElementById('timetableContainer');
 
             toggleFullscreenBtn.addEventListener('click', () => {
-                // Enter fullscreen
                 tableContainer.classList.add('fullscreen');
                 exitFullscreenBtn.style.display = 'block';
-                // Keep the scroll bar in fullscreen (overflow-y: auto is set in CSS)
             });
 
             exitFullscreenBtn.addEventListener('click', () => {
-                // Exit fullscreen
                 tableContainer.classList.remove('fullscreen');
                 exitFullscreenBtn.style.display = 'none';
-                // Re-center the current hour after returning to mini mode
                 scrollToCurrentHour();
             });
         });
