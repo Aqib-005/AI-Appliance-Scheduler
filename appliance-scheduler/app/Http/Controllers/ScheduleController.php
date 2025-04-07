@@ -31,11 +31,22 @@ class ScheduleController extends Controller
         $selectedAppliances = SelectedAppliance::with('appliance')->get();
         $schedule = Schedule::with('appliance')->get();
 
+        $scheduledLoadByDayHour = [];
+
         // Calculate weekly cost by summing, for each schedule entry, over its hours:
         $weeklyCost = 0;
+
         foreach ($schedule as $s) {
             $duration = $s->end_hour - $s->start_hour;
             $power = $s->appliance ? $s->appliance->power : 0;
+            for ($h = $s->start_hour; $h < $s->end_hour; $h++) {
+                // Initialize day/hour if not set
+                if (!isset($scheduledLoadByDayHour[$s->day])) {
+                    $scheduledLoadByDayHour[$s->day] = [];
+                }
+                $scheduledLoadByDayHour[$s->day][$h] = ($scheduledLoadByDayHour[$s->day][$h] ?? 0) + $power;
+            }
+
             $costForSchedule = 0;
             for ($h = $s->start_hour; $h < $s->end_hour; $h++) {
                 if (isset($pricesByDayHour[$s->day][$h])) {
@@ -48,6 +59,40 @@ class ScheduleController extends Controller
             $weeklyCost += $costForSchedule;
         }
 
+        $baselineSchedule = $this->getBaselineSchedule($selectedAppliances->toArray());
+        $baselineLoadByDayHour = [];
+        $baselineCost = 0;
+        foreach ($baselineSchedule as $s) {
+            $duration = $s['end_hour'] - $s['start_hour'];
+            $power = $s['power'];
+
+            for ($h = $s['start_hour']; $h < $s['end_hour']; $h++) {
+                // Track baseline load
+                $baselineLoadByDayHour[$s['day']][$h] = ($baselineLoadByDayHour[$s['day']][$h] ?? 0) + $power;
+
+                // Track baseline cost
+                if (isset($pricesByDayHour[$s['day']][$h])) {
+                    $pricePerKWh = $pricesByDayHour[$s['day']][$h] / 1000;
+                    $baselineCost += $power * $pricePerKWh;
+                }
+            }
+        }
+
+        $baselinePAR = $this->calculatePAR($baselineLoadByDayHour);
+        \Log::info("Baseline Loads:", $baselineLoadByDayHour);
+        \Log::info("Scheduled Load Data:", $scheduledLoadByDayHour);
+        $scheduledPAR = $this->calculatePAR($scheduledLoadByDayHour);
+
+        // Calculate cost reduction
+        $costReduction = ($baselineCost - $weeklyCost) / $baselineCost * 100;
+
+        // Print results to terminal
+        \Log::info("RESULTS:");
+        \Log::info("Baseline PAR: " . number_format($baselinePAR, 2));
+        \Log::info("Scheduled PAR: " . number_format($scheduledPAR, 2));
+        \Log::info("Cost Reduction: " . number_format($costReduction, 2) . "%");
+
+
         return view('dashboard', [
             'appliances' => $appliances,
             'selectedAppliances' => $selectedAppliances,
@@ -57,6 +102,52 @@ class ScheduleController extends Controller
         ]);
     }
 
+    private function calculatePAR($loadByDayHour)
+    {
+        $allLoads = [];
+        foreach ($loadByDayHour as $day => $hours) {
+            foreach ($hours as $hour => $load) {
+                if ($load > 0)
+                    $allLoads[] = $load; // Skip zero loads
+            }
+        }
+
+        if (empty($allLoads))
+            return 0; // Or return NAN to flag errors
+
+        $peak = max($allLoads);
+        $average = array_sum($allLoads) / count($allLoads);
+        return $peak / $average;
+    }
+
+    private function getBaselineSchedule($appliances)
+    {
+        // Define custom start times for each appliance (24-hour format)
+        $applianceStartTimes = [
+            'Oven' => 18,      // 6 PM (evening cooking)
+            'Dishwasher' => 12, // 12 PM (noon)
+            'Washing Machine' => 9, // 9 AM
+            'Electric Heater' => 1, // 12 AM (runs overnight)
+            'Vacuum' => 15      // 3 PM
+        ];
+
+        $baselineSchedule = [];
+
+        foreach ($appliances as $appliance) {
+            $name = $appliance['name'];
+            $startHour = $applianceStartTimes[$name] ?? 8; // Default to 8 AM if not found
+
+            $baselineSchedule[] = [
+                'day' => $appliance['usage_days'], // Preserve original usage day
+                'start_hour' => $startHour,
+                'end_hour' => $startHour + $appliance['duration'],
+                'power' => $appliance['power'],
+                'name' => $name
+            ];
+        }
+
+        return $baselineSchedule;
+    }
 
     public function showResults()
     {
