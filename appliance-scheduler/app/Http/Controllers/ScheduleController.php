@@ -83,14 +83,14 @@ class ScheduleController extends Controller
         \Log::info("Scheduled Load Data:", $scheduledLoadByDayHour);
         $scheduledPAR = $this->calculatePAR($scheduledLoadByDayHour);
 
-        // Calculate cost reduction
-        $costReduction = ($baselineCost - $weeklyCost) / $baselineCost * 100;
+        // // Calculate cost reduction
+        // $costReduction = ($baselineCost - $weeklyCost) / $baselineCost * 100;
 
         // Print results to terminal
         \Log::info("RESULTS:");
         \Log::info("Baseline PAR: " . number_format($baselinePAR, 2));
         \Log::info("Scheduled PAR: " . number_format($scheduledPAR, 2));
-        \Log::info("Cost Reduction: " . number_format($costReduction, 2) . "%");
+        // \Log::info("Cost Reduction: " . number_format($costReduction, 2) . "%");
 
 
         return view('dashboard', [
@@ -124,11 +124,11 @@ class ScheduleController extends Controller
     {
         // Define custom start times for each appliance (24-hour format)
         $applianceStartTimes = [
-            'Oven' => 18,      // 6 PM (evening cooking)
-            'Dishwasher' => 12, // 12 PM (noon)
-            'Washing Machine' => 9, // 9 AM
-            'Electric Heater' => 1, // 12 AM (runs overnight)
-            'Vacuum' => 15      // 3 PM
+            'Oven' => 6,
+            'Dishwasher' => 12,
+            'Washing Machine' => 14,
+            'Electric Heater' => 15,
+            'Vacuum' => 15
         ];
 
         $baselineSchedule = [];
