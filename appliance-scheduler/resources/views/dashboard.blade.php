@@ -26,7 +26,6 @@
             margin-bottom: 20px;
         }
 
-        /* Timetable container with fixed mini height */
         .table-container {
             flex: 1;
             height: 400px;
@@ -76,7 +75,6 @@
             font-weight: bold;
         }
 
-        /* Fullscreen mode for timetable */
         .table-container.fullscreen {
             position: fixed;
             top: 0;
@@ -91,7 +89,6 @@
             overflow-y: auto;
         }
 
-        /* Exit fullscreen (X) button */
         #exitFullscreenBtn {
             display: none;
             position: absolute;
@@ -120,18 +117,14 @@
                 <a href="{{ route('schedule.create') }}">
                     <button>Schedule</button>
                 </a>
-                <!-- Fullscreen toggle button -->
                 <button id="toggleFullscreenBtn">Fullscreen</button>
             </div>
 
-            <!-- Weekly Cost Display -->
             <div class="weekly-cost">
                 Weekly Cost: €{{ number_format($weeklyCost, 2) }}
             </div>
 
-            <!-- Timetable container -->
             <div class="table-container" id="timetableContainer">
-                <!-- Exit fullscreen button -->
                 <button id="exitFullscreenBtn">X</button>
                 <table>
                     <thead>
@@ -144,18 +137,29 @@
                     </thead>
                     <tbody>
                         @for ($hour = 0; $hour < 24; $hour++)
-                            <tr id="row-{{ $hour }}" data-hour="{{ $hour }}">
-                                <td>{{ sprintf('%02d:00', $hour) }}</td>
-                                @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
-                                    <td>
-                                        @foreach ($schedule as $entry)
-                                            @if ($entry->day === $day && $hour >= $entry->start_hour && $hour < $entry->end_hour)
-                                                {{ $entry->appliance->name ?? 'Appliance Not Found' }}
-                                            @endif
-                                        @endforeach
-                                    </td>
-                                @endforeach
-                            </tr>
+                                            <tr id="row-{{ $hour }}" data-hour="{{ $hour }}">
+                                                <td>{{ sprintf('%02d:00', $hour) }}</td>
+                                                @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
+                                                                        @php
+                                                                            $cellRendered = false;
+                                                                            foreach ($schedule as $entry) {
+                                                                                if ($entry->day === $day && $hour == $entry->start_hour) {
+                                                                                    $duration = $entry->end_hour - $entry->start_hour;
+                                                                                    echo '<td rowspan="' . $duration . '">' . ($entry->appliance->name ?? 'Appliance Not Found') . '</td>';
+                                                                                    $cellRendered = true;
+                                                                                    break;
+                                                                                } elseif ($entry->day === $day && $hour > $entry->start_hour && $hour < $entry->end_hour) {
+                                                                                    // Skip rendering for hours covered by rowspan
+                                                                                    $cellRendered = true;
+                                                                                    break;
+                                                                                }
+                                                                            }
+                                                                            if (!$cellRendered) {
+                                                                                echo '<td>&nbsp;</td>';
+                                                                            }
+                                                                        @endphp
+                                                @endforeach
+                                            </tr>
                         @endfor
                     </tbody>
                 </table>
@@ -164,7 +168,6 @@
 
         <!-- Right Side: Appliances and Prices -->
         <div class="right">
-            <!-- Appliances List -->
             <div class="window">
                 <h2>Appliances</h2>
                 <ul>
@@ -177,7 +180,6 @@
                 </a>
             </div>
 
-            <!-- Predicted Prices (Line Chart) -->
             <div class="window">
                 <h2>Predicted Prices</h2>
                 @if (!empty($predictions))
@@ -194,7 +196,6 @@
 
                                 <canvas id="predictionsChart"></canvas>
 
-                                <!-- Include Chart.js and the Moment adapter -->
                                 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
                                 <script src="https://cdn.jsdelivr.net/npm/moment@2.29.3/moment.min.js"></script>
                                 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment"></script>
@@ -241,7 +242,6 @@
     </div>
 
     <script>
-        // Scroll to the current hour row and add highlight
         function scrollToCurrentHour() {
             const tableContainer = document.getElementById('timetableContainer');
             const currentRow = document.getElementById(`row-${new Date().getHours()}`);
@@ -252,7 +252,6 @@
         }
 
         document.addEventListener('DOMContentLoaded', function () {
-            // Initial scroll positioning
             scrollToCurrentHour();
 
             const toggleFullscreenBtn = document.getElementById('toggleFullscreenBtn');
