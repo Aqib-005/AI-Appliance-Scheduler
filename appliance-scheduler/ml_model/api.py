@@ -58,30 +58,20 @@ async def schedule(request: PredictionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 def predict_future_prices(start_date):
-    """
-    Predict future electricity prices for 7 days from start_date.
-    If future_data is missing for part (or all) of that window, 
-    we try to pull last-year data for the same date range 
-    to capture day-to-day volatility. If last-year data is also missing,
-    we revert to an hourly-based fallback or random-based fallback.
-    """
-    # 1. Load CSVs
+
     historical_data = pd.read_csv("data/merged-data.csv")
     future_data = pd.read_csv("data/future-data.csv")
     
     if historical_data.empty:
         raise HTTPException(status_code=500, detail="Historical data is empty.")
     
-    # 2. Preprocess
     historical_data = load_and_preprocess_data(historical_data)
     future_data = load_and_preprocess_data(future_data) if not future_data.empty else pd.DataFrame()
 
-    # 3. Create forecast window
     user_start_dt = pd.to_datetime(start_date)
     forecast_end_dt = user_start_dt + pd.DateOffset(days=7)
     forecast_index = pd.date_range(user_start_dt, forecast_end_dt, freq='H')
 
-    # 4. Filter future_data to [user_start_dt, end_of_future_data]
     if not future_data.empty:
         max_future_dt = future_data['StartDateTime'].max()
         in_range = future_data[
@@ -91,12 +81,9 @@ def predict_future_prices(start_date):
     else:
         in_range = pd.DataFrame()
 
-    # 5. Identify missing hours in the forecast window
     have_index = in_range['StartDateTime'] if not in_range.empty else pd.Index([])
     missing_index = forecast_index.difference(have_index)
 
-    # 6. Attempt to fill missing hours from last-year data
-    #    For each missing timestamp T, we look up T - 1 year in the historical data
     last_year_filled = []
     if not missing_index.empty:
         for ts in missing_index:
@@ -104,8 +91,6 @@ def predict_future_prices(start_date):
             # We'll try to find a row in historical_data for that exact last_year_ts
             row = historical_data[historical_data['StartDateTime'] == last_year_ts]
             if not row.empty:
-                # Use that row's exogenous features
-                # (price columns won't matter; we only need exogenous for the future data)
                 new_row = row.copy()
                 new_row['StartDateTime'] = ts  # Shift the timestamp to the future year
                 last_year_filled.append(new_row)
@@ -115,10 +100,7 @@ def predict_future_prices(start_date):
         last_year_df = pd.concat(last_year_filled, ignore_index=True)
     else:
         last_year_df = pd.DataFrame(columns=historical_data.columns)
-
-    # 7. If last_year_df still doesn't cover all missing hours, 
-    #    fallback to an hourly-based or random approach for the remainder.
-    #    Let's do an example random fallback for demonstration:
+        
     still_missing_index = missing_index.difference(last_year_df['StartDateTime']) if not last_year_df.empty else missing_index
     random_fallback_rows = []
     if not still_missing_index.empty:
@@ -141,10 +123,6 @@ def predict_future_prices(start_date):
     
     random_fallback_df = pd.DataFrame(random_fallback_rows)
     
-    # 8. Combine everything: 
-    #    - in_range (already available future_data)
-    #    - last_year_df (shifted from last year)
-    #    - random_fallback_df
     combined_df = pd.concat([in_range, last_year_df, random_fallback_df], ignore_index=True)
     
     # 9. Reindex to the full forecast window, forward-fill if needed
@@ -180,10 +158,6 @@ def predict_future_prices(start_date):
     return combined_df[['StartDateTime','Predicted_Price']].to_dict(orient='records')
 
 def load_and_preprocess_data(df):
-    """
-    Basic cleaning: rename columns, parse datetime, interpolate numeric columns, etc.
-    """
-    # (Implementation same as before)
     df.columns = df.columns.str.strip().str.lower()
     mapping = {
         'start date/time': 'StartDateTime',
@@ -223,9 +197,6 @@ def load_and_preprocess_data(df):
     return df
 
 def engineer_features(df):
-    """
-    Add Hour, Day, cyclical Hour_sin, Hour_cos, etc. 
-    """
     data = df.copy()
     data['Hour'] = data['StartDateTime'].dt.hour
     data['Day'] = data['StartDateTime'].dt.day

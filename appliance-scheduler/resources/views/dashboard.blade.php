@@ -30,26 +30,62 @@
             flex: 1;
             height: 400px;
             overflow-y: auto;
+            overflow-x: auto;
             border: 1px solid #ddd;
             position: relative;
             width: 100%;
+            box-sizing: border-box;
+            background-color: #2e2e2e;
         }
 
         table {
             width: 100%;
+            min-width: 800px;
             border-collapse: collapse;
         }
 
         th,
         td {
-            border: 1px solid #ddd;
-            padding: 8px;
-            text-align: left;
-            white-space: nowrap;
+            border: 1px solid #444;
+            padding: 0;
+            text-align: center;
+            vertical-align: top;
+            height: 30px;
+            color: #fff;
         }
 
         th {
-            background-color: #f2f2f2;
+            background-color: #1e1e1e;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            color: #fff;
+        }
+
+        td {
+            background-color: #2e2e2e;
+        }
+
+        .appliance-cell {
+            display: flex;
+            flex-direction: row;
+            height: 100%;
+            width: 100%;
+        }
+
+        .appliance-block {
+            flex: 1;
+            background-color: #26a69a;
+            border: 1px solid #4dd0e1;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            font-size: 0.9em;
+            padding: 5px;
+            box-sizing: border-box;
+            min-height: 100%;
         }
 
         .button-container {
@@ -66,7 +102,7 @@
 
         .current-hour {
             border-left: 3px solid #007bff;
-            background-color: #e9f5ff;
+            background-color: #3e3e3e;
         }
 
         .weekly-cost {
@@ -82,11 +118,12 @@
             width: 100vw;
             height: 100vh;
             z-index: 9999;
-            background-color: #fff;
+            background-color: #2e2e2e;
             margin: 0;
             padding: 20px;
             box-sizing: border-box;
             overflow-y: auto;
+            overflow-x: auto;
         }
 
         #exitFullscreenBtn {
@@ -102,6 +139,10 @@
             border-radius: 4px;
             padding: 6px 12px;
             cursor: pointer;
+        }
+
+        td:empty {
+            background-color: #2e2e2e;
         }
     </style>
 </head>
@@ -141,21 +182,43 @@
                                                 <td>{{ sprintf('%02d:00', $hour) }}</td>
                                                 @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
                                                                         @php
-                                                                            $cellRendered = false;
+                                                                            $appliancesInSlot = [];
+                                                                            $isWithinDuration = false;
+
+                                                                            // Check if this hour is within the duration of an earlier appliance
                                                                             foreach ($schedule as $entry) {
-                                                                                if ($entry->day === $day && $hour == $entry->start_hour) {
-                                                                                    $duration = $entry->end_hour - $entry->start_hour;
-                                                                                    echo '<td rowspan="' . $duration . '">' . ($entry->appliance->name ?? 'Appliance Not Found') . '</td>';
-                                                                                    $cellRendered = true;
-                                                                                    break;
-                                                                                } elseif ($entry->day === $day && $hour > $entry->start_hour && $hour < $entry->end_hour) {
-                                                                                    // Skip rendering for hours covered by rowspan
-                                                                                    $cellRendered = true;
+                                                                                if ($entry->day === $day && $hour > $entry->start_hour && $hour < $entry->end_hour) {
+                                                                                    $isWithinDuration = true;
                                                                                     break;
                                                                                 }
                                                                             }
-                                                                            if (!$cellRendered) {
-                                                                                echo '<td>&nbsp;</td>';
+
+                                                                            // Collect appliances starting at this hour
+                                                                            if (!$isWithinDuration) {
+                                                                                foreach ($schedule as $entry) {
+                                                                                    if ($entry->day === $day && $entry->start_hour == $hour) {
+                                                                                        $duration = $entry->end_hour - $entry->start_hour;
+                                                                                        $appliancesInSlot[] = [
+                                                                                            'name' => $entry->appliance->name ?? 'Appliance Not Found',
+                                                                                            'duration' => $duration
+                                                                                        ];
+                                                                                    }
+                                                                                }
+
+                                                                                // Render the cell
+                                                                                if (!empty($appliancesInSlot)) {
+                                                                                    // Use the duration of the first appliance for rowspan (we'll handle side-by-side rendering)
+                                                                                    $firstApplianceDuration = $appliancesInSlot[0]['duration'];
+                                                                                    echo '<td rowspan="' . $firstApplianceDuration . '" class="appliance-cell">';
+                                                                                    foreach ($appliancesInSlot as $appliance) {
+                                                                                        // Adjust height to match the appliance's duration
+                                                                                        $blockHeight = $appliance['duration'] * 30; // 30px per hour
+                                                                                        echo '<div class="appliance-block" style="height: ' . $blockHeight . 'px;">' . $appliance['name'] . '</div>';
+                                                                                    }
+                                                                                    echo '</td>';
+                                                                                } else {
+                                                                                    echo '<td></td>';
+                                                                                }
                                                                             }
                                                                         @endphp
                                                 @endforeach

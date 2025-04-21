@@ -13,10 +13,10 @@ return new class extends Migration {
         Schema::create('appliances', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->decimal('power', 8, 2); // kW
-            $table->integer('preferred_start'); // Hour (0-23)
-            $table->integer('preferred_end'); // Hour (0-23)
-            $table->decimal('duration', 8, 2); // Hours
+            $table->decimal('power', 8, 2); 
+            $table->integer('preferred_start'); 
+            $table->integer('preferred_end'); 
+            $table->decimal('duration', 8, 2); 
             $table->json('usage_days')->nullable()->default(null);
             $table->timestamps();
         });

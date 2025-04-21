@@ -227,7 +227,6 @@
             @endforeach
         </div>
 
-        <!-- Weekly Grid (90% width) -->
         <div class="weekly-grid">
             @foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
                 <div class="day-column" id="day-{{ strtolower($day) }}" onclick="selectDay('{{ $day }}')">
