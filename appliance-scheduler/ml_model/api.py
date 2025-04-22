@@ -7,6 +7,7 @@ import joblib
 from aiocache import cached
 import xgboost as xgb
 import logging
+import time
 
 app = FastAPI()
 
@@ -38,7 +39,7 @@ features = [
 ]
 
 @app.post("/predict")
-@cached(ttl=3600)
+# @cached(ttl=3600)
 async def predict(request: PredictionRequest):
     try:
         predictions = predict_future_prices(request.start_date)
@@ -48,7 +49,7 @@ async def predict(request: PredictionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/schedule")
-@cached(ttl=3600)
+# @cached(ttl=3600)
 async def schedule(request: PredictionRequest):
     try:
         predictions = predict_future_prices(request.start_date)
@@ -58,7 +59,6 @@ async def schedule(request: PredictionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 def predict_future_prices(start_date):
-
     historical_data = pd.read_csv("data/merged-data.csv")
     future_data = pd.read_csv("data/future-data.csv")
     
@@ -88,14 +88,12 @@ def predict_future_prices(start_date):
     if not missing_index.empty:
         for ts in missing_index:
             last_year_ts = ts - pd.DateOffset(years=1)
-            # We'll try to find a row in historical_data for that exact last_year_ts
             row = historical_data[historical_data['StartDateTime'] == last_year_ts]
             if not row.empty:
                 new_row = row.copy()
-                new_row['StartDateTime'] = ts  # Shift the timestamp to the future year
+                new_row['StartDateTime'] = ts
                 last_year_filled.append(new_row)
     
-    # Combine all the last-year-filled rows into a DataFrame
     if last_year_filled:
         last_year_df = pd.concat(last_year_filled, ignore_index=True)
     else:
@@ -104,17 +102,13 @@ def predict_future_prices(start_date):
     still_missing_index = missing_index.difference(last_year_df['StartDateTime']) if not last_year_df.empty else missing_index
     random_fallback_rows = []
     if not still_missing_index.empty:
-        # We'll do a minimal random approach around the means of the last 48 hours
         last_hist_48 = historical_data.tail(48)
         means_48 = last_hist_48[features].mean(numeric_only=True)
         stds_48 = last_hist_48[features].std(numeric_only=True)
 
         for ts in still_missing_index:
-            # create a row dict
             row_dict = {'StartDateTime': ts}
             for feat in features:
-                # random value ~ N(mean, std)
-                # or 0 if std is NaN
                 mean_val = means_48.get(feat, 0)
                 std_val = stds_48.get(feat, 0)
                 rand_val = np.random.normal(mean_val, std_val if pd.notna(std_val) else 1e-3)
@@ -125,15 +119,12 @@ def predict_future_prices(start_date):
     
     combined_df = pd.concat([in_range, last_year_df, random_fallback_df], ignore_index=True)
     
-    # 9. Reindex to the full forecast window, forward-fill if needed
     combined_df.set_index('StartDateTime', inplace=True)
     combined_df = combined_df.sort_index().reindex(forecast_index).ffill().reset_index()
     combined_df.rename(columns={'index': 'StartDateTime'}, inplace=True)
 
-    # 10. Engineer features on the combined data
     combined_df = engineer_features(combined_df)
 
-    # 11. Iterative Price Forecast
     price_history = list(historical_data.tail(48)['Price'])
     predictions = []
     for idx, row in combined_df.iterrows():
@@ -203,7 +194,6 @@ def engineer_features(df):
     data['Hour_sin'] = np.sin(2 * np.pi * data['Hour'] / 24)
     data['Hour_cos'] = np.cos(2 * np.pi * data['Hour'] / 24)
 
-    # If 'Price' in columns, create lag
     if 'Price' in data.columns:
         data['Lag_Price_1h'] = data['Price'].shift(1)
         data['Lag_Price_24h'] = data['Price'].shift(24)
