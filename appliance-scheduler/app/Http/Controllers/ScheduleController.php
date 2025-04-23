@@ -402,10 +402,14 @@ class ScheduleController extends Controller
 
     public function removeAppliance($id)
     {
-        $appliance = Appliance::findOrFail($id);
-        $appliance->delete();
+        $appliance = Appliance::find($id);
 
-        return redirect()->back()->with('success', 'Appliance removed successfully.');
+        if ($appliance) {
+            $appliance->delete();
+            return response()->json(['success' => true]);
+        }
+
+        return response()->json(['success' => false], 400);
     }
 
     public function manageAppliances()
