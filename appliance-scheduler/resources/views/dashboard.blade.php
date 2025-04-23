@@ -6,18 +6,14 @@
     <style>
         :root {
             --first-col: 60px;
-            /* time label width */
             --row-height: 30px;
-            /* height per hour */
             --days: 7;
-            /* Monday→Sunday */
             --border: 1px solid #ccc;
-
             --bg-cell: #fff;
             --bg-header: #f5f5f5;
             --text: #000;
-
-            /* col‑width for each day */
+            --primary: #007bff;
+            --primary-dark: #0056b3;
             --col-width: calc((100% - var(--first-col)) / var(--days));
         }
 
@@ -26,12 +22,12 @@
             padding: 20px;
             background: var(--bg-cell);
             color: var(--text);
-            font-family: sans-serif;
+            font-family: 'Segoe UI', sans-serif;
         }
 
         h1,
         h2 {
-            margin: 0;
+            margin: 0 0 10px;
         }
 
         .container {
@@ -49,20 +45,61 @@
             display: flex;
             gap: 10px;
             align-items: center;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
+        }
+
+        .button-container button,
+        .window button {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .button-container button:hover,
+        .window button:hover {
+            background-color: var(--primary-dark);
         }
 
         .weekly-cost {
-            margin-bottom: 10px;
-            font-size: 1.2em;
-            font-weight: bold;
+            margin-bottom: 16px;
+            font-size: 1.1em;
+            background: #e0f7fa;
+            padding: 10px 15px;
+            border-left: 4px solid #0097a7;
+            border-radius: 4px;
+            width: fit-content;
         }
 
         .right {
             flex: 40%;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
         }
 
-        /* wrapper for grid + blocks */
+        .window {
+            border: 1px solid #ccc;
+            padding: 15px;
+            border-radius: 6px;
+            background: #fdfdfd;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .window ul {
+            list-style: none;
+            padding-left: 0;
+            margin-bottom: 10px;
+        }
+
+        .window li {
+            padding: 6px 0;
+            border-bottom: 1px solid #eee;
+        }
+
         .timetable-wrapper {
             position: relative;
             border: var(--border);
@@ -71,7 +108,6 @@
             background: var(--bg-cell);
         }
 
-        /* the 8×25 grid */
         .timetable-grid {
             display: grid;
             grid-template-columns: var(--first-col) repeat(var(--days), 1fr);
@@ -93,6 +129,7 @@
             position: sticky;
             top: 0;
             z-index: 3;
+            font-weight: bold;
         }
 
         .timetable-grid .time-label {
@@ -100,9 +137,9 @@
             position: sticky;
             left: 0;
             z-index: 3;
+            font-weight: bold;
         }
 
-        /* overlay for blocks */
         .blocks-container {
             position: absolute;
             top: 0;
@@ -120,10 +157,8 @@
             color: var(--text);
             border-radius: 3px;
             text-align: center;
-            /* allow wrapping so full names show */
             white-space: normal;
             word-break: break-word;
-            /* let text expand vertically if needed */
             overflow: visible;
             pointer-events: auto;
             z-index: 2;
@@ -136,21 +171,21 @@
     <div class="container">
         <div class="left">
             <div class="button-container">
-                <h2>Scheduled Appliances</h2>
+                <h2 style="flex: 1;">Scheduled Appliances</h2>
                 <a href="{{ route('schedule.create') }}"><button>Schedule</button></a>
                 <button id="toggleFullscreenBtn">Fullscreen</button>
             </div>
+
             <div class="weekly-cost">
                 Weekly Cost: €{{ number_format($weeklyCost, 2) }}
             </div>
 
             <div class="timetable-wrapper" id="timetableContainer">
-                {{-- GRID OF CELLS --}}
                 <div class="timetable-grid">
                     <div class="header">Time</div>
                     @php
                         $dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-                      @endphp
+                    @endphp
                     @foreach($dayNames as $day)
                         <div class="header">{{ $day }}</div>
                     @endforeach
@@ -163,7 +198,6 @@
                     @endfor
                 </div>
 
-                {{-- GROUP & SORT FOR OVERLAP --}}
                 @php
                     $byDay = [];
                     foreach ($schedule as $e) {
@@ -174,7 +208,6 @@
                     }
                 @endphp
 
-                {{-- BLOCKS OVERLAY --}}
                 <div class="blocks-container">
                     @foreach($byDay as $day => $entries)
                                     @php $d = array_search($day, $dayNames); @endphp
@@ -184,14 +217,12 @@
                                                         $e = $entry->end_hour;
                                                         $overlaps = array_filter(
                                                             $entries,
-                                                            fn($x) =>
-                                                            $x->start_hour < $e && $x->end_hour > $s
+                                                            fn($x) => $x->start_hour < $e && $x->end_hour > $s
                                                         );
                                                         usort($overlaps, fn($a, $b) => $a->start_hour <=> $b->start_hour);
                                                         $count = count($overlaps);
                                                         $pos = array_search($entry, $overlaps, true);
 
-                                                        // random transparent color:
                                                         $hue = crc32($entry->appliance_id . $s . $day) % 360;
                                                         $bg = "hsla($hue,70%,50%,0.4)";
                                                         $border = "hsla($hue,70%,40%,1)";
@@ -200,16 +231,16 @@
                                                         $height = "calc(var(--row-height) * (" . ($e - $s) . "))";
                                                         $width = "calc(var(--col-width) / $count)";
                                                         $left = "calc(var(--first-col) + var(--col-width) * $d + ($width) * $pos)";
-                                                      @endphp
+                                                    @endphp
 
                                                     <div class="appliance-block" style="
-                                                     top: {{ $top }};
-                                                     height: {{ $height }};
-                                                     left: {{ $left }};
-                                                     width: {{ $width }};
-                                                     background-color: {{ $bg }};
-                                                     border: 1px solid {{ $border }};
-                                                   ">
+                                                                                                top: {{ $top }};
+                                                                                                height: {{ $height }};
+                                                                                                left: {{ $left }};
+                                                                                                width: {{ $width }};
+                                                                                                background-color: {{ $bg }};
+                                                                                                border: 1px solid {{ $border }};
+                                                                                            ">
                                                         {{ $entry->appliance->name }}
                                                     </div>
                                     @endforeach
@@ -228,6 +259,7 @@
                 </ul>
                 <a href="{{ route('appliances.manage') }}"><button>View All Appliances</button></a>
             </div>
+
             <div class="window">
                 <h2>Predicted Prices</h2>
                 @if(!empty($predictions))
@@ -236,7 +268,7 @@
                                         'x' => \Carbon\Carbon::parse($p['StartDateTime'])->toDateTimeString(),
                                         'y' => $p['Predicted_Price']
                                     ]);
-                                  @endphp
+                                @endphp
                                 <canvas id="predictionsChart"></canvas>
                                 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
                                 <script src="https://cdn.jsdelivr.net/npm/moment@2.29.3/moment.min.js"></script>
@@ -250,7 +282,8 @@
                                                 label: 'Price (€/MWh)',
                                                 data: {!! $chartData->toJson() !!},
                                                 fill: false,
-                                                tension: 0.1
+                                                tension: 0.1,
+                                                borderColor: '#007bff'
                                             }]
                                         },
                                         options: {
@@ -276,10 +309,9 @@
             const container = document.getElementById('timetableContainer');
             container.scrollTop = rowH * now - container.clientHeight / 2;
 
-            // fullscreen toggle
             const toggle = document.getElementById('toggleFullscreenBtn');
             const exitBtn = document.createElement('button');
-            exitBtn.textContent = 'X';
+            exitBtn.textContent = 'Exit Fullscreen';
             Object.assign(exitBtn.style, {
                 position: 'absolute', top: '10px', right: '10px',
                 background: '#dc3545', color: '#fff', border: 'none',
@@ -295,13 +327,14 @@
                 toggle.style.display = 'none';
                 exitBtn.style.display = 'block';
             };
+
             exitBtn.onclick = () => {
                 Object.assign(container.style, {
                     position: '', top: '', left: '',
                     width: '', height: ''
                 });
-                exitBtn.style.display = 'none';
                 toggle.style.display = '';
+                exitBtn.style.display = 'none';
             };
         });
     </script>
