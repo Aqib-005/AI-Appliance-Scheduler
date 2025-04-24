@@ -385,15 +385,25 @@
         }
 
         function addApplianceToDay() {
-            if (!selectedApplianceId) {
-                alert('No appliance selected.');
+            const start = document.getElementById('preferredStart').value;
+            const end = document.getElementById('preferredEnd').value;
+            const dur = parseFloat(document.getElementById('duration').value);
+
+            if (!start || !end || isNaN(dur) || dur <= 0) {
+                alert('Please fill in all fields correctly.');
                 return;
             }
-            const start = document.getElementById('preferredStart').value,
-                end = document.getElementById('preferredEnd').value,
-                dur = parseFloat(document.getElementById('duration').value);
-            if (!selectedDay || !start || !end || isNaN(dur) || dur <= 0) {
-                alert('Please fill all fields and select a day.');
+            if (end <= start) {
+                alert('End time must be later than start time on the same day.');
+                return;
+            }
+            // --- NEW: ensure window >= required duration ---
+            // convert HH:MM → minutes
+            const [sh, sm] = start.split(':').map(Number);
+            const [eh, em] = end.split(':').map(Number);
+            const availableHours = ((eh * 60 + em) - (sh * 60 + sm)) / 60;
+            if (availableHours < dur) {
+                alert(`The selected window (${availableHours.toFixed(2)}h) is shorter than the required duration of ${dur.toFixed(2)}h.`);
                 return;
             }
 
@@ -415,32 +425,28 @@
                 .then(r => r.json())
                 .then(data => {
                     if (!data.success) throw new Error();
-                    // build exactly the same markup as server-rendered
                     const item = document.createElement('div');
                     item.className = 'appliance-item';
                     item.id = `appliance-${data.selected_appliance_id}`;
                     item.innerHTML = `
-                    <div class="action-icons">
-                      <button class="icon-btn"
+                  <div class="action-icons">
+                    <button class="icon-btn"
                         onclick="openEditAppliancePopup('${data.selected_appliance_id}','${selectedDay}')"
                         title="Edit">&#9998;</button>
-                      <button class="icon-btn"
+                    <button class="icon-btn"
                         onclick="openRemoveConfirmation('${data.selected_appliance_id}','${selectedDay.toLowerCase()}')"
                         title="Remove">&#128465;</button>
-                    </div>
-                    <span>
-                      ${document.getElementById('applianceName').value}
-                      (${start} - ${end}, ${dur.toFixed(2)}h)
-                    </span>
-                `;
+                  </div>
+                  <span>
+                    ${document.getElementById('applianceName').value}
+                    (${start} - ${end}, ${dur.toFixed(2)}h)
+                  </span>`;
                     document
                         .getElementById(`appliances-${selectedDay.toLowerCase()}`)
                         .appendChild(item);
                     closeSchedulePopup();
                 })
-                .catch(() => {
-                    alert('Failed to add appliance.');
-                });
+                .catch(() => alert('Failed to add appliance.'));
         }
 
         function openEditAppliancePopup(applianceId, day) {
