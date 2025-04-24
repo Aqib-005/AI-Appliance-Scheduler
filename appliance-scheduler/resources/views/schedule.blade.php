@@ -13,7 +13,6 @@
             font-family: Arial, sans-serif;
             margin: 0;
             padding: 20px;
-            overflow-x: auto;
         }
 
         .header {
@@ -28,16 +27,29 @@
             margin: 0;
         }
 
-        .schedule-button {
+        .btn {
             padding: 10px 20px;
             border: none;
             border-radius: 5px;
             cursor: pointer;
+            font-size: 1em;
+        }
+
+        .btn-primary {
+            background-color: #007bff;
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background-color: #0056b3;
+        }
+
+        .btn-success {
             background-color: #218838;
             color: #fff;
         }
 
-        .schedule-button:hover {
+        .btn-success:hover {
             background-color: #1e7e34;
         }
 
@@ -47,41 +59,57 @@
             width: 100%;
         }
 
+        /* Left list */
         .appliance-list {
             flex: 0 0 20%;
             min-width: 150px;
+            display: flex;
+            flex-direction: column;
         }
 
         .appliance-list h2 {
             margin-bottom: 10px;
         }
 
-        .appliance-list button {
+        .appliance-list-items {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .appliance-list-items button {
             width: 100%;
             padding: 10px;
-            margin-bottom: 10px;
             border: none;
             border-radius: 5px;
             text-align: left;
             cursor: pointer;
             background: #007bff;
             color: #fff;
+            font-size: 1em;
         }
 
-        .appliance-list button:hover {
+        .appliance-list-items button:hover {
             background: #0056b3;
         }
 
+        .schedule-button {
+            margin-top: 10px;
+            width: 100%;
+        }
+
+        /* Week grid */
         .weekly-grid {
             flex: 1;
             display: flex;
             gap: 10px;
-            overflow-x: auto;
+            overflow-x: hidden;
         }
 
         .day-column {
-            flex: 1 1 auto;
-            min-width: 150px;
+            flex: 0 0 calc((100% - 60px) / 7);
             padding: 10px;
             background: #f9f9f9;
             border: 1px solid #ccc;
@@ -100,47 +128,56 @@
             text-align: center;
             white-space: nowrap;
             margin-bottom: 10px;
+            font-size: 1.1em;
         }
 
         .appliances-container {
             flex: 1;
             display: flex;
             flex-direction: column;
-            gap: 5px;
+            gap: 10px;
         }
 
         .appliance-item {
+            position: relative;
             padding: 10px;
+            padding-top: 36px;
             background: #fff;
             border: 1px solid #ddd;
             border-radius: 5px;
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
         }
 
         .appliance-item span {
             flex: 1;
-            margin-right: 5px;
             word-wrap: break-word;
+            line-height: 1.3;
         }
 
-        .appliance-item button {
-            padding: 5px 8px;
-            margin: 2px 0 2px 5px;
+        .action-icons {
+            position: absolute;
+            top: 6px;
+            right: 8px;
+            display: flex;
+            gap: 6px;
+        }
+
+        .icon-btn {
+            background: none;
             border: none;
-            border-radius: 3px;
-            font-size: .9em;
             cursor: pointer;
-            background: #007bff;
-            color: #fff;
+            font-size: 1.2em;
+            color: #007bff;
+            padding: 4px;
+            line-height: 1;
         }
 
-        .appliance-item button:hover {
-            background: #0056b3;
+        .icon-btn:hover {
+            color: #0056b3;
         }
 
+        /* Popups & overlay */
         .popup {
             display: none;
             position: fixed;
@@ -156,11 +193,6 @@
             max-width: 90%;
         }
 
-        .popup.active,
-        .overlay.active {
-            display: block;
-        }
-
         .overlay {
             display: none;
             position: fixed;
@@ -169,22 +201,29 @@
             z-index: 999;
         }
 
+        .popup.active,
+        .overlay.active {
+            display: block;
+        }
+
         @media(max-width:768px) {
             .container {
-                flex-wrap: wrap
+                flex-wrap: wrap;
             }
 
             .appliance-list {
                 width: 100%;
-                margin-bottom: 20px
+                margin-bottom: 20px;
             }
 
             .weekly-grid {
-                width: 100%
+                width: 100%;
+                overflow-x: auto;
             }
 
             .day-column {
-                min-width: 200px
+                flex: 1 1 auto;
+                min-width: 200px;
             }
         }
     </style>
@@ -193,28 +232,48 @@
 <body>
     <div class="header">
         <h1>Schedule Appliances</h1>
-        <a href="{{ route('dashboard') }}"><button class="schedule-button">Back to Dashboard</button></a>
+        <a href="{{ route('dashboard') }}">
+            <button class="btn btn-success">Back to Dashboard</button>
+        </a>
     </div>
+
     <div class="container">
+        <!-- Left column: appliances + schedule -->
         <div class="appliance-list">
             <h2>Appliances</h2>
-            @foreach($appliances as $appliance)
-                <button onclick="openSchedulePopup('{{ $appliance->id }}')">{{ $appliance->name }}</button>
-            @endforeach
+            <div class="appliance-list-items">
+                @foreach($appliances as $appliance)
+                    <button onclick="openSchedulePopup('{{ $appliance->id }}')">
+                        {{ $appliance->name }}
+                    </button>
+                @endforeach
+            </div>
+            <button class="btn btn-success schedule-button" onclick="runSchedulingAlgorithm()">
+                Schedule
+            </button>
         </div>
+
+        <!-- Right column: week grid -->
         <div class="weekly-grid">
             @foreach(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
                 <div class="day-column" id="day-{{ strtolower($day) }}" onclick="selectDay('{{ $day }}')">
                     <h3>{{ $day }}</h3>
                     <div id="appliances-{{ strtolower($day) }}" class="appliances-container">
-                        @foreach($selectedAppliances as $appliance)
-                            @if(strtolower($appliance->usage_days) === strtolower($day))
-                                <div class="appliance-item" id="appliance-{{ $appliance->id }}">
-                                    <span>{{ $appliance->name }} ({{ $appliance->preferred_start }}-{{ $appliance->preferred_end }},
-                                        {{ $appliance->duration }}h)</span>
-                                    <button onclick="openEditAppliancePopup('{{ $appliance->id }}','{{ $day }}')">Edit</button>
-                                    <button
-                                        onclick="openRemoveConfirmation('{{ $appliance->id }}','{{ strtolower($day) }}')">Remove</button>
+                        @foreach($selectedAppliances as $appl)
+                            @if(strtolower($appl->usage_days) === strtolower($day))
+                                <div class="appliance-item" id="appliance-{{ $appl->id }}">
+                                    <div class="action-icons">
+                                        <button class="icon-btn" onclick="openEditAppliancePopup('{{ $appl->id }}','{{ $day }}')"
+                                            title="Edit">&#9998;</button>
+                                        <button class="icon-btn"
+                                            onclick="openRemoveConfirmation('{{ $appl->id }}','{{ strtolower($day) }}')"
+                                            title="Remove">&#128465;</button>
+                                    </div>
+                                    <span>
+                                        {{ $appl->name }}
+                                        ({{ $appl->preferred_start }} - {{ $appl->preferred_end }},
+                                        {{ $appl->duration }}h)
+                                    </span>
                                 </div>
                             @endif
                         @endforeach
@@ -223,8 +282,6 @@
             @endforeach
         </div>
     </div>
-
-    <button class="schedule-button" onclick="runSchedulingAlgorithm()">Schedule</button>
 
     <!-- Schedule Popup -->
     <div id="schedulePopup" class="popup">
@@ -329,19 +386,14 @@
 
         function addApplianceToDay() {
             if (!selectedApplianceId) {
-                alert('No appliance selected. Please try again.');
+                alert('No appliance selected.');
                 return;
             }
-            const preferredStart = document.getElementById('preferredStart').value;
-            const preferredEnd = document.getElementById('preferredEnd').value;
-            const duration = parseFloat(document.getElementById('duration').value);
-
-            if (!selectedDay || !preferredStart || !preferredEnd || isNaN(duration)) {
-                alert('Please fill in all fields and select a day.');
-                return;
-            }
-            if (duration <= 0) {
-                alert('Duration must be a positive number.');
+            const start = document.getElementById('preferredStart').value,
+                end = document.getElementById('preferredEnd').value,
+                dur = parseFloat(document.getElementById('duration').value);
+            if (!selectedDay || !start || !end || isNaN(dur) || dur <= 0) {
+                alert('Please fill all fields and select a day.');
                 return;
             }
 
@@ -349,45 +401,45 @@
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
                 },
                 body: JSON.stringify({
                     appliance_id: selectedApplianceId,
                     name: document.getElementById('applianceName').value,
-                    preferred_start: preferredStart,
-                    preferred_end: preferredEnd,
-                    duration: duration,
-                    usage_days: selectedDay,
-                }),
+                    preferred_start: start,
+                    preferred_end: end,
+                    duration: dur,
+                    usage_days: selectedDay
+                })
             })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error('Network response was not ok');
-                    }
-                    return response.json();
-                })
+                .then(r => r.json())
                 .then(data => {
-                    if (data.success) {
-                        const applianceItem = document.createElement('div');
-                        applianceItem.className = 'appliance-item';
-                        applianceItem.id = `appliance-${data.selected_appliance_id}`;
-                        applianceItem.innerHTML = `
-                            <span>
-                                ${document.getElementById('applianceName').value}
-                                (${preferredStart} - ${preferredEnd}, ${duration} hrs)
-                            </span>
-                            <button onclick="openEditAppliancePopup('${data.selected_appliance_id}', '${selectedDay}')">Edit</button>
-                            <button onclick="openRemoveConfirmation(${data.selected_appliance_id}, '${selectedDay.toLowerCase()}')">Remove</button>
-                        `;
-                        document.getElementById(`appliances-${selectedDay.toLowerCase()}`).appendChild(applianceItem);
-                        closeSchedulePopup();
-                    } else {
-                        alert('Failed to add appliance. Please try again.');
-                    }
+                    if (!data.success) throw new Error();
+                    // build exactly the same markup as server-rendered
+                    const item = document.createElement('div');
+                    item.className = 'appliance-item';
+                    item.id = `appliance-${data.selected_appliance_id}`;
+                    item.innerHTML = `
+                    <div class="action-icons">
+                      <button class="icon-btn"
+                        onclick="openEditAppliancePopup('${data.selected_appliance_id}','${selectedDay}')"
+                        title="Edit">&#9998;</button>
+                      <button class="icon-btn"
+                        onclick="openRemoveConfirmation('${data.selected_appliance_id}','${selectedDay.toLowerCase()}')"
+                        title="Remove">&#128465;</button>
+                    </div>
+                    <span>
+                      ${document.getElementById('applianceName').value}
+                      (${start} - ${end}, ${dur.toFixed(2)}h)
+                    </span>
+                `;
+                    document
+                        .getElementById(`appliances-${selectedDay.toLowerCase()}`)
+                        .appendChild(item);
+                    closeSchedulePopup();
                 })
-                .catch(error => {
-                    console.error('API Error:', error);
-                    alert('Failed to add appliance. Please try again.');
+                .catch(() => {
+                    alert('Failed to add appliance.');
                 });
         }
 
@@ -470,39 +522,6 @@
             document.getElementById('overlay').classList.remove('active');
         }
 
-        // function removeAppliance(applianceId, day) {
-        //     if (!confirm('Are you sure you want to remove this appliance?')) {
-        //         return;
-        //     }
-        //     fetch(`/selected-appliance/remove/${applianceId}`, {
-        //         method: 'DELETE',
-        //         headers: {
-        //             'Content-Type': 'application/json',
-        //             'X-CSRF-TOKEN': '{{ csrf_token() }}',
-        //         },
-        //     })
-        //         .then(response => {
-        //             if (!response.ok) {
-        //                 throw new Error('Network response was not ok');
-        //             }
-        //             return response.json();
-        //         })
-        //         .then(data => {
-        //             if (data.success) {
-        //                 const applianceElement = document.getElementById(`appliance-${applianceId}`);
-        //                 if (applianceElement) {
-        //                     applianceElement.remove();
-        //                 }
-        //             } else {
-        //                 alert('Failed to remove appliance. Please try again.');
-        //             }
-        //         })
-        //         .catch(error => {
-        //             console.error('API Error:', error);
-        //             alert('Failed to remove appliance. Please try again.');
-        //         });
-        // }
-
         function openRemoveConfirmation(id, day) {
             pendingRemoveId = id;
             pendingRemoveDay = day;
@@ -514,15 +533,22 @@
             document.getElementById('overlay').classList.remove('active');
         }
         document.getElementById('confirmRemoveBtn').addEventListener('click', () => {
-            const id = pendingRemoveId;
-            fetch(`/selected-appliance/remove/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' } })
-                .then(res => res.json())
+            fetch(`/selected-appliance/remove/${pendingRemoveId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                }
+            })
+                .then(r => r.json())
                 .then(data => {
-                    if (data.success) document.getElementById(`appliance-${id}`).remove();
-                    else alert('Failed to remove.');
-                    closeRemoveConfirmation();
+                    if (data.success) {
+                        document.getElementById(`appliance-${pendingRemoveId}`).remove();
+                    } else {
+                        alert('Remove failed');
+                    }
                 })
-                .catch(e => { console.error(e); alert('Error removing.'); closeRemoveConfirmation(); });
+                .finally(closeRemoveConfirmation);
         });
 
         function runSchedulingAlgorithm() {

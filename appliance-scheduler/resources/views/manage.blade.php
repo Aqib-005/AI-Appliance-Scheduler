@@ -2,9 +2,81 @@
 <html>
 
 <head>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Manage Appliances</title>
     <style>
-        /* Table Styles */
+        :root {
+            --border: 1px solid #ccc;
+            --bg-header: #f5f5f5;
+            --bg-cell: #fff;
+            --text: #000;
+
+            --btn-padding: 10px 20px;
+            --btn-radius: 5px;
+            --btn-font: 1em;
+
+            --color-primary: #007bff;
+            --color-primary-hover: #0056b3;
+            --color-success: #218838;
+            --color-success-hover: #1e7e34;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            background: var(--bg-cell);
+            color: var(--text);
+            font-family: Arial, sans-serif;
+        }
+
+        /* === Header === */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            margin: 0;
+        }
+
+        /* === Buttons === */
+        .btn {
+            padding: var(--btn-padding);
+            border: none;
+            border-radius: var(--btn-radius);
+            cursor: pointer;
+            font-size: var(--btn-font);
+        }
+
+        .btn-primary {
+            background-color: var(--color-primary);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--color-primary-hover);
+        }
+
+        .btn-success {
+            background-color: var(--color-success);
+            color: #fff;
+        }
+
+        .btn-success:hover {
+            background-color: var(--color-success-hover);
+        }
+
+        /* === Action row === */
+        .button-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        /* === Table === */
         table {
             width: 100%;
             border-collapse: collapse;
@@ -12,35 +84,35 @@
 
         th,
         td {
-            border: 1px solid #ddd;
+            border: var(--border);
             padding: 8px;
             text-align: left;
         }
 
         th {
-            background-color: #f2f2f2;
+            background-color: var(--bg-header);
         }
 
-        /* Popup Styles */
+        /* === Popups & overlay === */
         .popup {
             display: none;
             position: fixed;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            background: white;
+            background: var(--bg-cell);
             padding: 20px;
+            border-radius: var(--btn-radius);
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
             z-index: 1000;
+            width: 320px;
+            max-width: 90%;
         }
 
         .overlay {
             display: none;
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            inset: 0;
             background: rgba(0, 0, 0, 0.5);
             z-index: 999;
         }
@@ -50,31 +122,41 @@
             display: block;
         }
 
-        /* Button Styles */
-        .button-container {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
+        /* simple form spacing */
+        .popup label {
+            display: block;
+            margin-top: 10px;
         }
 
-        button {
-            padding: 10px 20px;
-            cursor: pointer;
+        .popup input {
+            width: 100%;
+            padding: 6px;
+            margin-top: 4px;
+            box-sizing: border-box;
+        }
+
+        .popup .actions {
+            margin-top: 20px;
+            text-align: right;
+        }
+
+        .popup .actions .btn {
+            margin-left: 10px;
         }
     </style>
 </head>
 
 <body>
-    <h1>Manage Appliances</h1>
-    <a href="{{ route('dashboard') }}">
-        <button>Back to Dashboard</button>
-    </a>
+    <div class="header">
+        <h1>Manage Appliances</h1>
+        <a href="{{ route('dashboard') }}">
+            <button class="btn btn-success">Back to Dashboard</button>
+        </a>
+    </div>
 
-    <!-- Button and Table -->
     <div class="button-container">
         <h2>Existing Appliances</h2>
-        <button onclick="openAddPopup()">Add Appliance</button>
+        <button class="btn btn-success" onclick="openAddPopup()">Add Appliance</button>
     </div>
 
     <table>
@@ -97,8 +179,8 @@
                     <td>{{ date('H:i', strtotime($appliance->preferred_end)) }}</td>
                     <td>{{ $appliance->duration }}</td>
                     <td>
-                        <button onclick="openEditPopup({{ $appliance->id }})">Edit</button>
-                        <button onclick="openDeletePopup({{ $appliance->id }})">Delete</button>
+                        <button class="btn btn-primary" onclick="openEditPopup({{ $appliance->id }})">Edit</button>
+                        <button class="btn btn-primary" onclick="openDeletePopup({{ $appliance->id }})">Delete</button>
                     </td>
                 </tr>
             @endforeach
@@ -112,21 +194,23 @@
             @csrf
             <label for="name">Appliance Name:</label>
             <input type="text" id="name" name="name" required>
-            <br>
+
             <label for="power">Power (kW):</label>
             <input type="number" step="0.1" id="power" name="power" required>
-            <br>
+
             <label for="preferred_start">Preferred Start Time:</label>
             <input type="time" id="preferred_start" name="preferred_start" required>
-            <br>
+
             <label for="preferred_end">Preferred End Time:</label>
             <input type="time" id="preferred_end" name="preferred_end" required>
-            <br>
+
             <label for="duration">Duration (hours):</label>
             <input type="number" step="0.1" id="duration" name="duration" required>
-            <br>
-            <button type="submit">Add</button>
-            <button type="button" onclick="closeAddPopup()">Cancel</button>
+
+            <div class="actions">
+                <button type="submit" class="btn btn-primary">Add</button>
+                <button type="button" class="btn" onclick="closeAddPopup()">Cancel</button>
+            </div>
         </form>
     </div>
 
@@ -135,24 +219,27 @@
         <h2>Edit Appliance</h2>
         <form id="editForm" method="POST">
             @csrf
-            @method('PUT') 
+            @method('PUT')
+
             <label for="edit_name">Appliance Name:</label>
             <input type="text" id="edit_name" name="name" required>
-            <br>
+
             <label for="edit_power">Power (kW):</label>
             <input type="number" step="0.1" id="edit_power" name="power" required>
-            <br>
+
             <label for="edit_preferred_start">Preferred Start Time:</label>
             <input type="time" id="edit_preferred_start" name="preferred_start" required>
-            <br>
+
             <label for="edit_preferred_end">Preferred End Time:</label>
             <input type="time" id="edit_preferred_end" name="preferred_end" required>
-            <br>
+
             <label for="edit_duration">Duration (hours):</label>
             <input type="number" step="0.1" id="edit_duration" name="duration" required>
-            <br>
-            <button type="submit">Update</button>
-            <button type="button" onclick="closeEditPopup()">Cancel</button>
+
+            <div class="actions">
+                <button type="submit" class="btn btn-primary">Update</button>
+                <button type="button" class="btn" onclick="closeEditPopup()">Cancel</button>
+            </div>
         </form>
     </div>
 
@@ -163,12 +250,13 @@
         <form id="deleteForm" method="POST">
             @csrf
             @method('DELETE')
-            <button type="submit">Yes</button>
-            <button type="button" onclick="closeDeletePopup()">No</button>
+            <div class="actions">
+                <button type="submit" class="btn btn-success">Yes</button>
+                <button type="button" class="btn" onclick="closeDeletePopup()">No</button>
+            </div>
         </form>
     </div>
 
-    <!-- Overlay -->
     <div id="overlay" class="overlay"></div>
 
     <script>
@@ -177,7 +265,6 @@
             document.getElementById('addPopup').classList.add('active');
             document.getElementById('overlay').classList.add('active');
         }
-
         function closeAddPopup() {
             document.getElementById('addPopup').classList.remove('active');
             document.getElementById('overlay').classList.remove('active');
@@ -185,28 +272,17 @@
 
         // Edit Appliance Popup
         function openEditPopup(applianceId) {
-            // Fetch appliance data (you can use AJAX or preload data)
             const appliance = {!! json_encode($appliances->keyBy('id')->toArray()) !!}[applianceId];
-
-            // Format the time values to ensure they are in H:i format
-            const preferredStart = appliance.preferred_start ? appliance.preferred_start.substring(0, 5) : '';
-            const preferredEnd = appliance.preferred_end ? appliance.preferred_end.substring(0, 5) : '';
-
-            // Populate the form
             document.getElementById('edit_name').value = appliance.name;
             document.getElementById('edit_power').value = appliance.power;
-            document.getElementById('edit_preferred_start').value = preferredStart;
-            document.getElementById('edit_preferred_end').value = preferredEnd;
+            document.getElementById('edit_preferred_start').value = appliance.preferred_start?.substring(0, 5);
+            document.getElementById('edit_preferred_end').value = appliance.preferred_end?.substring(0, 5);
             document.getElementById('edit_duration').value = appliance.duration;
-
-            // Set the form action
             document.getElementById('editForm').action = `/appliance/edit/${applianceId}`;
 
-            // Show the popup
             document.getElementById('editPopup').classList.add('active');
             document.getElementById('overlay').classList.add('active');
         }
-
         function closeEditPopup() {
             document.getElementById('editPopup').classList.remove('active');
             document.getElementById('overlay').classList.remove('active');
@@ -214,14 +290,10 @@
 
         // Delete Confirmation Popup
         function openDeletePopup(applianceId) {
-            // Set the form action
             document.getElementById('deleteForm').action = `/appliance/remove/${applianceId}`;
-
-            // Show the popup
             document.getElementById('deletePopup').classList.add('active');
             document.getElementById('overlay').classList.add('active');
         }
-
         function closeDeletePopup() {
             document.getElementById('deletePopup').classList.remove('active');
             document.getElementById('overlay').classList.remove('active');
