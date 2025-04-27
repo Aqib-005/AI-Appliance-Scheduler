@@ -163,7 +163,7 @@
         <thead>
             <tr>
                 <th>Name</th>
-                <th>Power (kW)</th>
+                <th>Power (kW/h)</th>
                 <th>Preferred Start</th>
                 <th>Preferred End</th>
                 <th>Duration (hours)</th>
@@ -195,8 +195,8 @@
             <label for="name">Appliance Name:</label>
             <input type="text" id="name" name="name" required>
 
-            <label for="power">Power (kW):</label>
-            <input type="number" step="0.1" id="power" name="power" required>
+            <label for="power">Power (kW/h):</label>
+            <input type="number" step="0.01" id="power" name="power" required>
 
             <label for="preferred_start">Preferred Start Time:</label>
             <input type="time" id="preferred_start" name="preferred_start" required>
@@ -224,8 +224,8 @@
             <label for="edit_name">Appliance Name:</label>
             <input type="text" id="edit_name" name="name" required>
 
-            <label for="edit_power">Power (kW):</label>
-            <input type="number" step="0.1" id="edit_power" name="power" required>
+            <label for="edit_power">Power (kW/h):</label>
+            <input type="number" step="0.01" id="edit_power" name="power" required>
 
             <label for="edit_preferred_start">Preferred Start Time:</label>
             <input type="time" id="edit_preferred_start" name="preferred_start" required>

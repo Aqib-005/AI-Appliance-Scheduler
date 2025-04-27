@@ -322,8 +322,8 @@
             <label for="editDuration">Duration (hours):</label>
             <input type="number" id="editDuration" name="duration" step="0.01" placeholder="e.g., 2.5" required>
             <br><br>
-            <button type="button" onclick="updateAppliance()">Save</button>
-            <button type="button" onclick="closeEditAppliancePopup()">Cancel</button>
+            <button type="button" class="btn btn-primary" onclick="updateAppliance()">Save</button>
+            <button type="button" class="btn" onclick="closeEditAppliancePopup()">Cancel</button>
         </form>
     </div>
 
@@ -397,8 +397,6 @@
                 alert('End time must be later than start time on the same day.');
                 return;
             }
-            // --- NEW: ensure window >= required duration ---
-            // convert HH:MM → minutes
             const [sh, sm] = start.split(':').map(Number);
             const [eh, em] = end.split(':').map(Number);
             const availableHours = ((eh * 60 + em) - (sh * 60 + sm)) / 60;
@@ -474,52 +472,60 @@
         }
 
         function updateAppliance() {
-            const applianceId = document.getElementById('editApplianceId').value;
-            let preferredStart = document.getElementById('editPreferredStart').value;
-            let preferredEnd = document.getElementById('editPreferredEnd').value;
-            const duration = parseFloat(document.getElementById('editDuration').value);
+            let start = document.getElementById('editPreferredStart').value;
+            let end = document.getElementById('editPreferredEnd').value;
+            let dur = parseFloat(document.getElementById('editDuration').value);
+            const id = document.getElementById('editApplianceId').value;
 
-            preferredStart = preferredStart.substring(0, 5);
-            preferredEnd = preferredEnd.substring(0, 5);
+            start = start.substring(0, 5);
+            end = end.substring(0, 5);
 
-            if (!preferredStart || !preferredEnd || isNaN(duration) || duration <= 0) {
+            // basic completeness
+            if (!start || !end || isNaN(dur) || dur <= 0) {
                 alert('Please fill in all fields correctly.');
                 return;
             }
+            // ensure ordering
+            if (end <= start) {
+                alert('End time must be later than start time on the same day.');
+                return;
+            }
+            // ensure window ≥ duration
+            const [sh, sm] = start.split(':').map(Number);
+            const [eh, em] = end.split(':').map(Number);
+            const availableHours = ((eh * 60 + em) - (sh * 60 + sm)) / 60;
+            if (availableHours < dur) {
+                alert(`The window (${availableHours.toFixed(2)}h) is shorter than the required duration (${dur.toFixed(2)}h).`);
+                return;
+            }
 
-            fetch(`/selected-appliance/update/${applianceId}`, {
+            fetch(`/selected-appliance/update/${id}`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
                 },
                 body: JSON.stringify({
-                    preferred_start: preferredStart,
-                    preferred_end: preferredEnd,
-                    duration: duration,
-                }),
+                    preferred_start: start,
+                    preferred_end: end,
+                    duration: dur
+                })
             })
-                .then(response => {
-                    if (!response.ok) {
-                        return response.text().then(text => {
-                            throw new Error(`HTTP error! Status: ${response.status}, Response: ${text}`);
-                        });
-                    }
-                    return response.json();
+                .then(r => {
+                    if (!r.ok) return r.text().then(t => Promise.reject(t));
+                    return r.json();
                 })
                 .then(data => {
-                    if (data.success) {
-                        const applianceElement = document.getElementById(`appliance-${applianceId}`);
-                        applianceElement.querySelector('span').textContent =
-                            `${document.getElementById('editApplianceName').value} (${preferredStart} - ${preferredEnd}, ${duration} hrs)`;
-                        closeEditAppliancePopup();
-                    } else {
-                        alert('Failed to update appliance.');
-                    }
+                    if (!data.success) throw new Error();
+                    const el = document.getElementById(`appliance-${id}`);
+                    el.querySelector('span').textContent =
+                        `${document.getElementById('editApplianceName').value}
+                     (${start} - ${end}, ${dur.toFixed(2)}h)`;
+                    closeEditAppliancePopup();
                 })
-                .catch(error => {
-                    console.error('Error:', error);
-                    alert('An error occurred while saving changes: ' + error.message);
+                .catch(err => {
+                    console.error(err);
+                    alert('Failed to update appliance.');
                 });
         }
 

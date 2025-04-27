@@ -234,12 +234,12 @@
                                                     @endphp
 
                                                     <div class="appliance-block" style="
-                                                                                                top: {{ $top }};
-                                                                                                height: {{ $height }};
-                                                                                                left: {{ $left }};
-                                                                                                width: {{ $width }};
-                                                                                                background-color: {{ $bg }};
-                                                                                                border: 1px solid {{ $border }};
+                                                                                            top: {{ $top }};
+                                                                                            height: {{ $height }};
+                                                                                            left: {{ $left }};
+                                                                                            width: {{ $width }};
+                                                                                            background-color: {{ $bg }};
+                                                                                            border: 1px solid {{ $border }};
                                                                                             ">
                                                         {{ $entry->appliance->name }}
                                                     </div>
@@ -254,7 +254,7 @@
                 <h2>Appliances</h2>
                 <ul>
                     @foreach($appliances as $a)
-                        <li>{{ $a->name }} ({{ $a->power }} kW)</li>
+                        <li>{{ $a->name }} ({{ $a->power }} kW/h)</li>
                     @endforeach
                 </ul>
                 <a href="{{ route('appliances.manage') }}"><button>View All Appliances</button></a>
