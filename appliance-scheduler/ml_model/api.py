@@ -39,7 +39,7 @@ features = [
 ]
 
 @app.post("/predict")
-# @cached(ttl=3600)
+@cached(ttl=3600)
 async def predict(request: PredictionRequest):
     try:
         predictions = predict_future_prices(request.start_date)
@@ -49,7 +49,7 @@ async def predict(request: PredictionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/schedule")
-# @cached(ttl=3600)
+@cached(ttl=3600)
 async def schedule(request: PredictionRequest):
     try:
         predictions = predict_future_prices(request.start_date)

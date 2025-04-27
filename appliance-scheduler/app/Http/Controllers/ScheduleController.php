@@ -8,7 +8,7 @@ use App\Models\Appliance;
 use App\Models\SelectedAppliance;
 use App\Models\Schedule;
 
-class ScheduleController extends Controller
+class ScheduleController
 {
     public function dashboard()
     {
@@ -260,7 +260,7 @@ class ScheduleController extends Controller
                 $predictionsByDay[$day],
                 $schedule[$day] ?? [],
                 $preferredStart,
-                $preferredEnd,
+                $preferredEnd - $duration,
                 $duration
             );
 
@@ -273,7 +273,7 @@ class ScheduleController extends Controller
                     $predictionsByDay[$day],
                     $schedule[$day] ?? [],
                     0,
-                    23 - $duration + 1,
+                    24 - $duration,
                     $duration
                 );
             }
