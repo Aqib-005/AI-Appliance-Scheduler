@@ -3,175 +3,25 @@
 
 <head>
     <title>Dashboard</title>
-    <style>
-        :root {
-            --first-col: 60px;
-            --row-height: 30px;
-            --days: 7;
-            --border: 1px solid #ccc;
-            --bg-cell: #fff;
-            --bg-header: #f5f5f5;
-            --text: #000;
-            --primary: #007bff;
-            --primary-dark: #0056b3;
-            --col-width: calc((100% - var(--first-col)) / var(--days));
-        }
-
-        body {
-            margin: 0;
-            padding: 20px;
-            background: var(--bg-cell);
-            color: var(--text);
-            font-family: 'Segoe UI', sans-serif;
-        }
-
-        h1,
-        h2 {
-            margin: 0 0 10px;
-        }
-
-        .container {
-            display: flex;
-            gap: 20px;
-        }
-
-        .left {
-            flex: 60%;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .button-container {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-
-        .button-container button,
-        .window button {
-            background-color: var(--primary);
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: bold;
-        }
-
-        .button-container button:hover,
-        .window button:hover {
-            background-color: var(--primary-dark);
-        }
-
-        .weekly-cost {
-            margin-bottom: 16px;
-            font-size: 1.1em;
-            background: #e0f7fa;
-            padding: 10px 15px;
-            border-left: 4px solid #0097a7;
-            border-radius: 4px;
-            width: fit-content;
-        }
-
-        .right {
-            flex: 40%;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-        }
-
-        .window {
-            border: 1px solid #ccc;
-            padding: 15px;
-            border-radius: 6px;
-            background: #fdfdfd;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-        }
-
-        .window ul {
-            list-style: none;
-            padding-left: 0;
-            margin-bottom: 10px;
-        }
-
-        .window li {
-            padding: 6px 0;
-            border-bottom: 1px solid #eee;
-        }
-
-        .timetable-wrapper {
-            position: relative;
-            border: var(--border);
-            overflow: auto;
-            height: calc(var(--row-height) * 25);
-            background: var(--bg-cell);
-        }
-
-        .timetable-grid {
-            display: grid;
-            grid-template-columns: var(--first-col) repeat(var(--days), 1fr);
-            grid-template-rows: var(--row-height) repeat(24, var(--row-height));
-        }
-
-        .timetable-grid>div {
-            box-sizing: border-box;
-            border: var(--border);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: var(--bg-cell);
-            z-index: 1;
-        }
-
-        .timetable-grid .header {
-            background: var(--bg-header);
-            position: sticky;
-            top: 0;
-            z-index: 3;
-            font-weight: bold;
-        }
-
-        .timetable-grid .time-label {
-            background: var(--bg-header);
-            position: sticky;
-            left: 0;
-            z-index: 3;
-            font-weight: bold;
-        }
-
-        .blocks-container {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
-        }
-
-        .appliance-block {
-            position: absolute;
-            box-sizing: border-box;
-            padding: 4px;
-            font-size: 0.85em;
-            color: var(--text);
-            border-radius: 3px;
-            text-align: center;
-            white-space: normal;
-            word-break: break-word;
-            overflow: visible;
-            pointer-events: auto;
-            z-index: 2;
-        }
-    </style>
+    <link href="{{ asset('css/app.css') }}" rel="stylesheet">
 </head>
 
-<body>
-    <h1>Dashboard</h1>
+<body class="dashboard-page">
+    <header class="app-header">
+        <div class="app-header-container">
+            <a href="{{ route('dashboard') }}" class="app-header-brand">
+                <img src="{{ asset('images/logo.png') }}" alt="App Logo" class="app-header-logo">
+                <span class="app-header-title">HomeSched</span>
+            </a>
+
+            <h1 class="app-page-title">Dashboard</h1>
+        </div>
+    </header>
+
     <div class="container">
         <div class="left">
             <div class="button-container">
-                <h2 style="flex: 1;">Scheduled Appliances</h2>
+                <h2>Scheduled Appliances</h2>
                 <a href="{{ route('schedule.create') }}"><button>Schedule</button></a>
                 <button id="toggleFullscreenBtn">Fullscreen</button>
             </div>
@@ -182,12 +32,12 @@
 
             <div class="timetable-wrapper" id="timetableContainer">
                 <div class="timetable-grid">
-                    <div class="header">Time</div>
+                    <div class="title">Time</div>
                     @php
                         $dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
                     @endphp
                     @foreach($dayNames as $day)
-                        <div class="header">{{ $day }}</div>
+                        <div class="title">{{ $day }}</div>
                     @endforeach
 
                     @for($h = 0; $h < 24; $h++)
@@ -233,14 +83,15 @@
                                                         $left = "calc(var(--first-col) + var(--col-width) * $d + ($width) * $pos)";
                                                     @endphp
 
-                                                    <div class="appliance-block" style="
-                                                                                            top: {{ $top }};
-                                                                                            height: {{ $height }};
-                                                                                            left: {{ $left }};
-                                                                                            width: {{ $width }};
-                                                                                            background-color: {{ $bg }};
-                                                                                            border: 1px solid {{ $border }};
-                                                                                            ">
+                                                    <div class="appliance-block"
+                                                        style="
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    top: {{ $top }};
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    height: {{ $height }};
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    left: {{ $left }};
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    width: {{ $width }};
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    background-color: {{ $bg }};
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    border: 1px solid {{ $border }};
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    ">
                                                         {{ $entry->appliance->name }}
                                                     </div>
                                     @endforeach

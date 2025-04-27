@@ -4,238 +4,21 @@
 <head>
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Schedule Appliances</title>
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 20px;
-        }
-
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            margin-bottom: 20px;
-        }
-
-        .header h1 {
-            margin: 0;
-        }
-
-        .btn {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 1em;
-        }
-
-        .btn-primary {
-            background-color: #007bff;
-            color: #fff;
-        }
-
-        .btn-primary:hover {
-            background-color: #0056b3;
-        }
-
-        .btn-success {
-            background-color: #218838;
-            color: #fff;
-        }
-
-        .btn-success:hover {
-            background-color: #1e7e34;
-        }
-
-        .container {
-            display: flex;
-            gap: 20px;
-            width: 100%;
-        }
-
-        /* Left list */
-        .appliance-list {
-            flex: 0 0 20%;
-            min-width: 150px;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .appliance-list h2 {
-            margin-bottom: 10px;
-        }
-
-        .appliance-list-items {
-            flex: 1;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .appliance-list-items button {
-            width: 100%;
-            padding: 10px;
-            border: none;
-            border-radius: 5px;
-            text-align: left;
-            cursor: pointer;
-            background: #007bff;
-            color: #fff;
-            font-size: 1em;
-        }
-
-        .appliance-list-items button:hover {
-            background: #0056b3;
-        }
-
-        .schedule-button {
-            margin-top: 10px;
-            width: 100%;
-        }
-
-        /* Week grid */
-        .weekly-grid {
-            flex: 1;
-            display: flex;
-            gap: 10px;
-            overflow-x: hidden;
-        }
-
-        .day-column {
-            flex: 0 0 calc((100% - 60px) / 7);
-            padding: 10px;
-            background: #f9f9f9;
-            border: 1px solid #ccc;
-            border-radius: 5px;
-            display: flex;
-            flex-direction: column;
-            min-height: 300px;
-        }
-
-        .day-column.active {
-            border-color: #007bff;
-            background: #e9f5ff;
-        }
-
-        .day-column h3 {
-            text-align: center;
-            white-space: nowrap;
-            margin-bottom: 10px;
-            font-size: 1.1em;
-        }
-
-        .appliances-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .appliance-item {
-            position: relative;
-            padding: 10px;
-            padding-top: 36px;
-            background: #fff;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            display: flex;
-            align-items: center;
-        }
-
-        .appliance-item span {
-            flex: 1;
-            word-wrap: break-word;
-            line-height: 1.3;
-        }
-
-        .action-icons {
-            position: absolute;
-            top: 6px;
-            right: 8px;
-            display: flex;
-            gap: 6px;
-        }
-
-        .icon-btn {
-            background: none;
-            border: none;
-            cursor: pointer;
-            font-size: 1.2em;
-            color: #007bff;
-            padding: 4px;
-            line-height: 1;
-        }
-
-        .icon-btn:hover {
-            color: #0056b3;
-        }
-
-        /* Popups & overlay */
-        .popup {
-            display: none;
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: #fff;
-            padding: 20px;
-            border-radius: 5px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, .1);
-            z-index: 1000;
-            width: 320px;
-            max-width: 90%;
-        }
-
-        .overlay {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, .5);
-            z-index: 999;
-        }
-
-        .popup.active,
-        .overlay.active {
-            display: block;
-        }
-
-        @media(max-width:768px) {
-            .container {
-                flex-wrap: wrap;
-            }
-
-            .appliance-list {
-                width: 100%;
-                margin-bottom: 20px;
-            }
-
-            .weekly-grid {
-                width: 100%;
-                overflow-x: auto;
-            }
-
-            .day-column {
-                flex: 1 1 auto;
-                min-width: 200px;
-            }
-        }
-    </style>
+    <link href="{{ asset('css/app.css') }}" rel="stylesheet">
 </head>
 
-<body>
-    <div class="header">
-        <h1>Schedule Appliances</h1>
-        <a href="{{ route('dashboard') }}">
-            <button class="btn btn-success">Back to Dashboard</button>
-        </a>
-    </div>
+<body class="schedule-page">
+
+    <header class="app-header">
+        <div class="app-header-container">
+            <a href="{{ route('dashboard') }}" class="app-header-brand">
+                <img src="{{ asset('images/logo.png') }}" alt="App Logo" class="app-header-logo">
+                <span class="app-header-title">HomeSched</span>
+            </a>
+
+            <h1 class="app-page-title">Schedule Appliances</h1>
+        </div>
+    </header>
 
     <div class="container">
         <!-- Left column: appliances + schedule -->
@@ -271,8 +54,7 @@
                                     </div>
                                     <span>
                                         {{ $appl->name }}
-                                        ({{ $appl->preferred_start }} - {{ $appl->preferred_end }},
-                                        {{ $appl->duration }}h)
+                                        ({{ $appl->preferred_start }} - {{ $appl->preferred_end }}, {{ $appl->duration }}h)
                                     </span>
                                 </div>
                             @endif
