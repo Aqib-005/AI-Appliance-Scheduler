@@ -12,7 +12,7 @@ class ScheduleController
 {
     public function dashboard()
     {
-        //  Get cached predictions if there is any
+        //  Get cached predictions if there is any 
         $predictions = session('predictions', []);
 
         // Convert predictions into price array
