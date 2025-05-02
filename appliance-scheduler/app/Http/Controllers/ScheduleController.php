@@ -244,7 +244,7 @@ class ScheduleController
             }
         }
 
-        // Order appliances by (power × duration) descending
+        // Order appliances by (power × duration) descending 
         usort(
             $appliances,
             fn($a, $b) =>
