@@ -4,6 +4,7 @@
 <head>
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Manage Appliances</title>
+
     <link href="{{ asset('css/app.css') }}" rel=" stylesheet">
 </head>
 
@@ -22,11 +23,13 @@
 
     <div class="container">
 
+        <!-- Add appliance button and section title -->
         <div class="button-container">
             <h2>Existing Appliances</h2>
             <button class="btn btn-success" onclick="openAddPopup()">Add Appliance</button>
         </div>
 
+        <!-- Appliance table -->
         <table>
             <thead>
                 <tr>
@@ -39,6 +42,7 @@
                 </tr>
             </thead>
             <tbody>
+                <!-- Loop through each appliance and display data -->
                 @foreach ($appliances as $appliance)
                     <tr data-id="{{ $appliance->id }}">
                         <td>{{ $appliance->name }}</td>
@@ -47,6 +51,7 @@
                         <td>{{ date('H:i', strtotime($appliance->preferred_end)) }}</td>
                         <td>{{ $appliance->duration }}</td>
                         <td>
+                            <!-- Edit and Delete buttons -->
                             <button class="btn btn-primary" onclick="openEditPopup({{ $appliance->id }})">Edit</button>
                             <button class="btn btn-primary" onclick="openDeletePopup({{ $appliance->id }})">Delete</button>
                         </td>
@@ -55,7 +60,7 @@
             </tbody>
         </table>
 
-        <!-- Add Appliance Popup -->
+        <!-- Add Appliance -->
         <div id="addPopup" class="popup">
             <h2>Add Appliance</h2>
             <form action="{{ route('appliance.add') }}" method="POST">
@@ -77,7 +82,7 @@
             </form>
         </div>
 
-        <!-- Edit Appliance Popup -->
+        <!-- Edit Appliance -->
         <div id="editPopup" class="popup">
             <h2>Edit Appliance</h2>
             <form id="editForm" method="POST">
@@ -100,7 +105,7 @@
             </form>
         </div>
 
-        <!-- Delete Confirmation Popup -->
+        <!-- Confirm Delete -->
         <div id="deletePopup" class="popup">
             <h2>Delete Appliance</h2>
             <p>Are you sure you want to delete this appliance?</p>
@@ -115,17 +120,18 @@
         <script>
             let pendingDeleteId = null;
 
-            // == Add popup
+            // Add popup
             function openAddPopup() {
                 document.getElementById('addPopup').classList.add('active');
                 document.getElementById('overlay').classList.add('active');
             }
+
             function closeAddPopup() {
                 document.getElementById('addPopup').classList.remove('active');
                 document.getElementById('overlay').classList.remove('active');
             }
 
-            // == Edit popup
+            // Edit popup 
             function openEditPopup(id) {
                 const app = {!! json_encode($appliances->keyBy('id')->toArray()) !!}[id];
                 document.getElementById('edit_name').value = app.name;
@@ -138,23 +144,25 @@
                 document.getElementById('editPopup').classList.add('active');
                 document.getElementById('overlay').classList.add('active');
             }
+
             function closeEditPopup() {
                 document.getElementById('editPopup').classList.remove('active');
                 document.getElementById('overlay').classList.remove('active');
             }
 
-            // == Delete popup
+            // Delete popup
             function openDeletePopup(id) {
                 pendingDeleteId = id;
                 document.getElementById('deletePopup').classList.add('active');
                 document.getElementById('overlay').classList.add('active');
             }
+
             function closeDeletePopup() {
                 document.getElementById('deletePopup').classList.remove('active');
                 document.getElementById('overlay').classList.remove('active');
             }
 
-            // == AJAX Delete
+            // Handle Delete 
             document.getElementById('confirmDeleteBtn').addEventListener('click', () => {
                 if (!pendingDeleteId) return closeDeletePopup();
 
@@ -168,7 +176,7 @@
                     .then(r => r.json())
                     .then(data => {
                         if (data.success) {
-                            // remove the row
+                            // Remove row from table
                             const row = document.querySelector(`tr[data-id="${pendingDeleteId}"]`);
                             if (row) row.remove();
                         } else {

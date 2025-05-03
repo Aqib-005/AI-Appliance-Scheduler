@@ -152,7 +152,7 @@ class ScheduleController
         // Clear  previous schedule
         Schedule::truncate();
 
-        // Determine week-start date (this Monday)
+        // Find week-start date (this Monday)
         $start_date = date('Y-m-d', strtotime('monday this week'));
         \Log::info('Calculated start_date:', ['start_date' => $start_date]);
 

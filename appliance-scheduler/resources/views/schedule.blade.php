@@ -15,13 +15,11 @@
                 <img src="{{ asset('images/logo.png') }}" alt="App Logo" class="app-header-logo">
                 <span class="app-header-title">HomeSched</span>
             </a>
-
             <h1 class="app-page-title">Schedule Appliances</h1>
         </div>
     </header>
 
     <div class="container">
-        <!-- Left column: appliances + schedule -->
         <div class="appliance-list">
             <h2>Appliances</h2>
             <div class="appliance-list-items">
@@ -31,12 +29,13 @@
                     </button>
                 @endforeach
             </div>
+            <!-- Trigger the scheduling algorithm -->
             <button class="btn btn-success schedule-button" onclick="runSchedulingAlgorithm()">
                 Schedule
             </button>
         </div>
 
-        <!-- Right column: week grid -->
+        <!-- weekly schedule grid -->
         <div class="weekly-grid">
             @foreach(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day)
                 <div class="day-column" id="day-{{ strtolower($day) }}" onclick="selectDay('{{ $day }}')">
@@ -44,6 +43,7 @@
                     <div id="appliances-{{ strtolower($day) }}" class="appliances-container">
                         @foreach($selectedAppliances as $appl)
                             @if(strtolower($appl->usage_days) === strtolower($day))
+                                <!-- Display scheduled appliance with edit/remove buttons -->
                                 <div class="appliance-item" id="appliance-{{ $appl->id }}">
                                     <div class="action-icons">
                                         <button class="icon-btn" onclick="openEditAppliancePopup('{{ $appl->id }}','{{ $day }}')"
@@ -65,7 +65,7 @@
         </div>
     </div>
 
-    <!-- Schedule Popup -->
+    <!-- Schedule new appliance -->
     <div id="schedulePopup" class="popup">
         <h2>Schedule Appliance for <span id="selectedDayName"></span></h2>
         <form id="scheduleForm">
@@ -87,7 +87,7 @@
         </form>
     </div>
 
-    <!-- Edit Appliance Popup -->
+    <!-- Edit existing appliance schedule -->
     <div id="editAppliancePopup" class="popup">
         <h2>Edit Appliance for <span id="editSelectedDayName"></span></h2>
         <form onsubmit="event.preventDefault();">
@@ -109,7 +109,7 @@
         </form>
     </div>
 
-    <!-- Remove Confirmation Popup -->
+    <!-- Confirm appliance removal -->
     <div id="removeConfirmationPopup" class="popup">
         <h2>Confirm Removal</h2>
         <p>Are you sure you want to remove this appliance?</p>
@@ -117,13 +117,13 @@
         <button type="button" onclick="closeRemoveConfirmation()">Cancel</button>
     </div>
 
-    <!-- Overlay -->
     <div id="overlay" class="overlay"></div>
 
     <script>
         let selectedDay = null;
         let selectedApplianceId = null;
 
+        // Highlights selected day
         function selectDay(day) {
             document.querySelectorAll('.day-column').forEach(column => {
                 column.classList.remove('active');
@@ -139,6 +139,7 @@
             }
             selectedApplianceId = applianceId;
 
+            // Fetch appliance data
             fetch(`/appliance/get/${applianceId}`)
                 .then(response => response.json())
                 .then(data => {
@@ -171,6 +172,7 @@
             const end = document.getElementById('preferredEnd').value;
             const dur = parseFloat(document.getElementById('duration').value);
 
+            // Basic validation
             if (!start || !end || isNaN(dur) || dur <= 0) {
                 alert('Please fill in all fields correctly.');
                 return;
@@ -179,6 +181,7 @@
                 alert('End time must be later than start time on the same day.');
                 return;
             }
+            // Calculate available window
             const [sh, sm] = start.split(':').map(Number);
             const [eh, em] = end.split(':').map(Number);
             const availableHours = ((eh * 60 + em) - (sh * 60 + sm)) / 60;
@@ -205,6 +208,7 @@
                 .then(r => r.json())
                 .then(data => {
                     if (!data.success) throw new Error();
+                    // Add appliance to UI
                     const item = document.createElement('div');
                     item.className = 'appliance-item';
                     item.id = `appliance-${data.selected_appliance_id}`;
@@ -234,6 +238,7 @@
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
+                        // Fill in form with current values
                         document.getElementById('editApplianceId').value = data.appliance.id;
                         document.getElementById('editApplianceName').value = data.appliance.name;
                         document.getElementById('editPreferredStart').value = data.appliance.preferred_start;
@@ -262,7 +267,7 @@
             start = start.substring(0, 5);
             end = end.substring(0, 5);
 
-            // basic completeness
+            // basic validation
             if (!start || !end || isNaN(dur) || dur <= 0) {
                 alert('Please fill in all fields correctly.');
                 return;
@@ -272,7 +277,6 @@
                 alert('End time must be later than start time on the same day.');
                 return;
             }
-            // ensure window ≥ duration
             const [sh, sm] = start.split(':').map(Number);
             const [eh, em] = end.split(':').map(Number);
             const availableHours = ((eh * 60 + em) - (sh * 60 + sm)) / 60;

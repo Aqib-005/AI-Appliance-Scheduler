@@ -21,7 +21,7 @@ class SelectedAppliance extends Model
         'predicted_end_time',
     ];
 
-    // Define the relationship with the Appliance model
+    // relationship with the Appliance model
     public function appliance()
     {
         return $this->belongsTo(Appliance::class, 'appliance_id');
