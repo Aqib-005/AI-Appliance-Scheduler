@@ -51,7 +51,7 @@ pip-wheel-metadata/
 # Node modules (if frontend involved)
 node_modules/
 
-# macOS
+# macOS (enethough there is no mac)
 .DS_Store
 
 # Windows
