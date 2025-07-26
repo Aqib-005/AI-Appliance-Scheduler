@@ -2,6 +2,8 @@
 
 This project is a smart appliance scheduling system that leverages machine learning to predict electricity prices and optimize appliance usage for cost-efficiency. It was developed as part of my final-year university dissertation.
 
+<img width="1299" height="697" alt="AI-Appliance" src="https://github.com/user-attachments/assets/21288044-8c66-420c-87f2-23dace886852" />
+
 ---
 
 ## 🎯 Purpose
