@@ -6,7 +6,7 @@ This project is a smart appliance scheduling system that leverages machine learn
 
 ## 🎯 Purpose
 
-The goal is to help households reduce electricity bills by automatically scheduling appliances to run during cheaper time slots — based on predicted day-ahead market electricity prices.
+The goal is to help households reduce electricity bills by automatically scheduling appliances to run during cheaper time slots based on predicted day-ahead market electricity prices.
 
 ---
 
